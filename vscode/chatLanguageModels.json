@@ -1,0 +1,41 @@
+[
+	{
+		"name": "Gemini",
+		"vendor": "gemini",
+		"apiKey": "${input:chat.lm.secret.-5fdc9b71}"
+	},
+	{
+		"name": "Anthropic",
+		"vendor": "anthropic"
+	},
+	{
+		"name": "Copilot",
+		"vendor": "copilot",
+		"settings": {
+			"gpt-5.3-codex": {
+				"reasoningEffort": "xhigh"
+			},
+			"gpt-5-mini": {
+				"reasoningEffort": "high"
+			},
+			"gpt-5.2-codex": {
+				"reasoningEffort": "xhigh"
+			}
+		}
+	},
+	{
+		"name": "Copilot CLI",
+		"vendor": "copilotcli",
+		"settings": {
+			"gpt-5.3-codex": {
+				"reasoningEffort": "high"
+			},
+			"gpt-5-mini": {
+				"reasoningEffort": "high"
+			},
+			"gpt-5.2-codex": {
+				"reasoningEffort": "xhigh"
+			}
+		}
+	}
+]
