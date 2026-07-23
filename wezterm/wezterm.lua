@@ -6,12 +6,15 @@ config.font = wezterm.font("JetBrainsMono Nerd Font Mono")
 config.font_size = 9
 config.use_ime = true
 
+config.unix_domains = {
+  { name = "mux" },
+}
+
 -- 透過・ぼかし
 config.win32_system_backdrop = "Acrylic"
-config.window_background_opacity = 0.75
+config.window_background_opacity = 0.85
 
 -- レンダラー・パフォーマンス
--- 上記Acrylic透過のためWebGpuではなくOpenGLを使用
 config.front_end = "OpenGL"
 config.max_fps = 60
 config.animation_fps = 60
@@ -26,6 +29,16 @@ config.cursor_blink_ease_out = "EaseOut"
 -- カラースキーム
 config.color_scheme = "Tokyo Night"
 
+----------------------------------------------------
+-- ハイパーリンク（クリックでURL/ファイルパスを開けるようにする）
+----------------------------------------------------
+-- 標準ルール（http/https, mailto等）をベースに、Windowsの絶対パスを開けるルールを追加する
+config.hyperlink_rules = wezterm.default_hyperlink_rules()
+table.insert(config.hyperlink_rules, {
+  regex = [[[A-Za-z]:\\(?:[^\s\\<>:"|?*]+\\)*[^\s\\<>:"|?*]+]],
+  format = "file:///$0",
+})
+
 -- 余白
 config.window_padding = {
   left = 10, right = 10,
@@ -39,10 +52,6 @@ config.enable_scroll_bar = false
 config.audible_bell = "Disabled"
 
 -- ビジュアルベル：ベル受信時に画面をふわっと点滅させて知らせる。
--- audible_bell = "Disabled" のままなので「音の代わりに視覚で通知」になる。
--- フラッシュ色は下の config.colors.visual_bell で指定する。
--- ※フェードの滑らかさは animation_fps に依存する。現状 10 だと 100〜200ms の
---   フェードが数フレームしか描かれずカクつきやすい。ぬるっとさせたいなら 30 前後へ。
 config.visual_bell = {
   fade_in_function     = "EaseIn",
   fade_in_duration_ms  = 100,
@@ -95,11 +104,6 @@ wezterm.on("gui-startup", function(cmd)
   apply_default_size(window:gui_window())
 end)
 
-----------------------------------------------------
--- 最大化 / 元のサイズ のトグル（キーは keybinds.lua の Alt+f）
-----------------------------------------------------
--- wezterm には「今が最大化状態か」を返す API が無いため、
--- ウィンドウ ID をキーにして自前で状態を持つ
 local maximized = {}
 
 wezterm.on("toggle-maximize", function(window, pane)
@@ -112,6 +116,77 @@ wezterm.on("toggle-maximize", function(window, pane)
     window:maximize()
     maximized[id] = true
   end
+end)
+
+----------------------------------------------------
+-- コーディング用レイアウトを新規タブで開く（左: Neovim / 右: Claude Code）
+-- キーは keybinds.lua の Leader → N
+----------------------------------------------------
+wezterm.on("spawn-coding-tab", function(window, pane)
+  local mux_window = window:mux_window()
+
+  -- カレントディレクトリを引き継ぐ（取得できない場合はnilのままデフォルトに任せる）
+  local cwd_uri = pane:get_current_working_dir()
+  local cwd = cwd_uri and cwd_uri.file_path or nil
+
+  -- 左ペイン: Neovim（現在のペインと同じドメインに新規タブを作成。
+  -- 以前は domain = "mux" を指定していたが、別のmux接続を新規に張るため非同期になり、
+  -- タブ生成直後のsend_textがシェル起動前に送られて失われる不具合があった。2026-07-23修正）
+  local tab = mux_window:spawn_tab({ cwd = cwd, domain = "CurrentPaneDomain" })
+  local left_pane = tab:active_pane()
+  -- PowerShell(ConPTY)は\nだけではEnter確定と認識しないため\rを使う
+  left_pane:send_text("nvim\r")
+
+  -- 右ペイン: Claude Code（右側に幅35%で分割）
+  local right_pane = left_pane:split({ direction = "Right", size = 0.35, cwd = cwd })
+  right_pane:send_text("claude\r")
+
+  left_pane:activate()
+end)
+
+----------------------------------------------------
+-- KITプロキシ経由のコーディング用レイアウトを新規タブで開く
+-- （左: Neovim / 右: kit_proxy設定済みのClaude Code）
+-- キーは keybinds.lua の Leader → C
+----------------------------------------------------
+wezterm.on("spawn-kit-proxy-claude", function(window, pane)
+  local mux_window = window:mux_window()
+
+  local cwd_uri = pane:get_current_working_dir()
+  local cwd = cwd_uri and cwd_uri.file_path or nil
+
+  -- 左ペイン: Neovim（spawn-coding-tabと同様、CurrentPaneDomainで作成）
+  local tab = mux_window:spawn_tab({ cwd = cwd, domain = "CurrentPaneDomain" })
+  local left_pane = tab:active_pane()
+  left_pane:send_text("nvim\r")
+
+  -- 右ペイン: kit_proxy実行後にClaude Code（右側に幅35%で分割）
+  local right_pane = left_pane:split({ direction = "Right", size = 0.35, cwd = cwd })
+
+  -- kit_proxy.bat（C:\tools\kit_proxy.bat）はプロキシ環境変数を設定した後、
+  -- `cmd /k` で新しいcmdシェルに常駐する設計。そのcmdシェルへの切り替えが
+  -- 完了する前にclaudeを送るとPowerShell側に取りこぼされる。固定sleep(800ms)
+  -- では新規タブのシェル起動時間のばらつきで間に合わないことが実測で確認できた
+  -- （2026-07-23）ため、フォアグラウンドプロセスがcmd.exeになるまでポーリングで
+  -- 待ってから送る（最大5秒、取得APIが使えない環境向けに2秒のフォールバックも兼ねる）。
+  right_pane:send_text("kit_proxy\r")
+  local switched = false
+  for _ = 1, 50 do
+    wezterm.sleep_ms(100)
+    local ok, proc = pcall(function()
+      return right_pane:get_foreground_process_name()
+    end)
+    if ok and proc and proc:lower():find("cmd.exe", 1, true) then
+      switched = true
+      break
+    end
+  end
+  if not switched then
+    wezterm.sleep_ms(2000)
+  end
+  right_pane:send_text("claude\r")
+
+  left_pane:activate()
 end)
 
 ----------------------------------------------------
@@ -184,41 +259,61 @@ end
 --    表示順は左から：TABLE → バッテリー → 日付 → 時計
 ----------------------------------------------------
 wezterm.on("update-right-status", function(window, pane)
-  local name = window:active_key_table()
-  local time = wezterm.strftime("%H:%M")
+  -- 中身を丸ごとpcallで囲む。API名の打ち間違い等で例外が起きた場合、
+  -- ここで止めないと以降のTABLE/バッテリー/日付/時計が軒並み描画されず右上が全消えする
+  -- （2026-07-23、window:is_leader_active() の綴り間違いで実際に発生した）。
+  -- 保険としてエラー時は赤字で内容を出す。
+  local ok, err = pcall(function()
+    local name = window:active_key_table()
+    local time = wezterm.strftime("%H:%M")
 
-  -- wezterm.format に渡す要素を左から順に積んでいく
-  local cells = {}
+    -- wezterm.format に渡す要素を左から順に積んでいく
+    local cells = {}
 
-  -- シェルから OSC 1337 SetUserVar で送られたユーザー変数 "wz_status" を表示する。
-  -- PowerShell 側の Set-WezVar 関数（$PROFILE に定義）で送信する想定。
-  -- 値が空／未設定のときは何も出さない（＝送った時だけ左端に出る）。
-  local user_status = pane:get_user_vars().wz_status
-  if user_status and user_status ~= "" then
-    table.insert(cells, { Foreground = { Color = "#bb9af7" } })  -- Tokyo Night 紫系
-    table.insert(cells, { Text = "  " .. user_status .. "   " })
-  end
+    -- LEADER(Ctrl+Q)押下直後〜タイムアウトまでの間、視覚的にわかるようにする。
+    -- これが無いとLEADERが効いているか操作者側から判別できず、押し方のミスに気づけない。
+    if window:leader_is_active() then
+      table.insert(cells, { Foreground = { Color = "#f7768e" } })  -- Tokyo Night 赤系
+      table.insert(cells, { Text = "  LEADER   " })
+    end
 
-  if name then
+    -- シェルから OSC 1337 SetUserVar で送られたユーザー変数 "wz_status" を表示する。
+    -- PowerShell 側の Set-WezVar 関数（$PROFILE に定義）で送信する想定。
+    -- 値が空／未設定のときは何も出さない（＝送った時だけ左端に出る）。
+    local user_status = pane:get_user_vars().wz_status
+    if user_status and user_status ~= "" then
+      table.insert(cells, { Foreground = { Color = "#bb9af7" } })  -- Tokyo Night 紫系
+      table.insert(cells, { Text = "  " .. user_status .. "   " })
+    end
+
+    if name then
+      table.insert(cells, { Foreground = { Color = "#888888" } })
+      table.insert(cells, { Text = "  TABLE: " .. name .. "   " })
+    end
+
+    local batt, batt_color = battery_text()
+    if batt then
+      table.insert(cells, { Foreground = { Color = batt_color } })
+      table.insert(cells, { Text = "  " .. batt .. "   " })
+    end
+
+    -- 日付（時計の左）。時計と区別しやすいよう Tokyo Night の青系で表示
+    table.insert(cells, { Foreground = { Color = "#7aa2f7" } })
+    table.insert(cells, { Text = date_text() .. "   " })
+
+    -- 時計（一番右）。既存の見た目を維持するため灰色 + 末尾の余白
     table.insert(cells, { Foreground = { Color = "#888888" } })
-    table.insert(cells, { Text = "  TABLE: " .. name .. "   " })
+    table.insert(cells, { Text = time .. "  " })
+
+    window:set_right_status(wezterm.format(cells))
+  end)
+
+  if not ok then
+    window:set_right_status(wezterm.format({
+      { Foreground = { Color = "#f7768e" } },
+      { Text = "  status error: " .. tostring(err) .. "  " },
+    }))
   end
-
-  local batt, batt_color = battery_text()
-  if batt then
-    table.insert(cells, { Foreground = { Color = batt_color } })
-    table.insert(cells, { Text = "  " .. batt .. "   " })
-  end
-
-  -- 日付（時計の左）。時計と区別しやすいよう Tokyo Night の青系で表示
-  table.insert(cells, { Foreground = { Color = "#7aa2f7" } })
-  table.insert(cells, { Text = date_text() .. "   " })
-
-  -- 時計（一番右）。既存の見た目を維持するため灰色 + 末尾の余白
-  table.insert(cells, { Foreground = { Color = "#888888" } })
-  table.insert(cells, { Text = time .. "  " })
-
-  window:set_right_status(wezterm.format(cells))
 end)
 
 config.status_update_interval = 1000
@@ -299,6 +394,16 @@ wezterm.on("format-tab-title", function(tab, tabs, panes, config, hover, max_wid
     { Text = ROUND_RIGHT_EDGE },
   }
 end)
+
+----------------------------------------------------
+-- ランチャーメニュー（Leader → M で開く。config.launch_menuの一覧から選んで新規タブで起動）
+----------------------------------------------------
+config.launch_menu = {
+  { label = "PowerShell",  args = { "powershell.exe", "-NoLogo" } },
+  { label = "WSL",         args = { "wsl.exe" } },
+  { label = "Neovim",      args = { "nvim" } },
+  { label = "Claude Code", args = { "claude" } },
+}
 
 ----------------------------------------------------
 -- keybinds

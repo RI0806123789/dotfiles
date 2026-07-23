@@ -61,125 +61,13 @@ function Set-WezVar {
     [Console]::Out.Write("$esc]1337;SetUserVar=$Name=$b64$bel")
 }
 
-# --- ターミナル内 CPU/メモリ/GPU/DISK/NET バー版ダッシュボード（旧Show-SysDash）------
-# 使い方 : Show-SysBar             （既定 約1秒間隔で更新、Ctrl+C で終了）
-#          Show-SysBar -IntervalSec 2
-# 取得元 : すべて CIM（ロケール非依存・高速）。
-#          CPU = Win32_PerfFormattedData_PerfOS_Processor(_Total)
-#          MEM = Win32_OperatingSystem（Total/Free）
-#          GPU = Win32_PerfFormattedData_GPUPerformanceCounters_GPUEngine
-#                → エンジン種別ごとに使用率を合計し、その最大値をタスクマネージャ風の
-#                  「GPU使用率」として表示する（Intel Arc 対応）。
-# 注意   : GPUはエンジン種別（3d / videodecode 等）ごとの内訳も下段に表示する。
-function Show-SysBar {
-    param([double]$IntervalSec = 1)
-
-    $ESC   = [char]27
-    $full  = [char]0x2588   # █ バーの塗り
-    $light = [char]0x2591   # ░ バーの余白
-
-    # 割合(0-100)を幅widthのバー文字列にする
-    function _Bar([double]$pct, [int]$width = 28) {
-        if ($pct -lt 0) { $pct = 0 } elseif ($pct -gt 100) { $pct = 100 }
-        $fill = [int][math]::Round($pct / 100 * $width)
-        return ($full.ToString() * $fill) + ($light.ToString() * ($width - $fill))
-    }
-    # 割合に応じた色（緑→黄→赤）
-    function _Col([double]$pct) {
-        if ($pct -ge 85) { 'Red' } elseif ($pct -ge 60) { 'Yellow' } else { 'Green' }
-    }
-    # bytes/秒 を読みやすい単位（B/s・KB/s・MB/s）へ変換する
-    function _Rate([double]$bps) {
-        if     ($bps -ge 1MB) { '{0,6:N1} MB/s' -f ($bps / 1MB) }
-        elseif ($bps -ge 1KB) { '{0,6:N1} KB/s' -f ($bps / 1KB) }
-        else                  { '{0,6:N0} B/s ' -f  $bps }
-    }
-
-    # WMIプロバイダの初回初期化コストを先に払っておく（1周目のカクつき防止）
-    $null = Get-CimInstance Win32_PerfFormattedData_PerfOS_Processor
-    $null = Get-CimInstance Win32_PerfFormattedData_GPUPerformanceCounters_GPUEngine
-    $null = Get-CimInstance Win32_PerfFormattedData_PerfDisk_PhysicalDisk
-    $null = Get-CimInstance Win32_PerfFormattedData_Tcpip_NetworkInterface
-
-    [Console]::CursorVisible = $false
-    Clear-Host
-    try {
-        while ($true) {
-            # --- CPU ---
-            $cpu = [double](Get-CimInstance Win32_PerfFormattedData_PerfOS_Processor -Filter "Name='_Total'").PercentProcessorTime
-
-            # --- メモリ（KB→MB）---
-            $os = Get-CimInstance Win32_OperatingSystem
-            $memTotalMB = [math]::Round($os.TotalVisibleMemorySize / 1KB)
-            $memUsedMB  = $memTotalMB - [math]::Round($os.FreePhysicalMemory / 1KB)
-            $memPct = if ($memTotalMB -gt 0) { $memUsedMB / $memTotalMB * 100 } else { 0 }
-
-            # --- GPU（エンジン種別ごとに合計→最大値を全体使用率とする）---
-            $eng = Get-CimInstance Win32_PerfFormattedData_GPUPerformanceCounters_GPUEngine
-            $byType = $eng | Group-Object { ($_.Name -split 'engtype_')[-1] } | ForEach-Object {
-                [pscustomobject]@{ Type = $_.Name; Val = ($_.Group | Measure-Object UtilizationPercentage -Sum).Sum }
-            }
-            $gpu = [double](($byType | Measure-Object Val -Maximum).Maximum)
-            if ($gpu -gt 100) { $gpu = 100 }
-            $topEng = (($byType | Where-Object { $_.Val -gt 0 } | Sort-Object Val -Descending |
-                Select-Object -First 3 | ForEach-Object { '{0} {1:N0}%' -f $_.Type, $_.Val }) -join '   ')
-
-            # --- ディスク I/O（物理ディスク _Total: ビジー率＋読み書き速度）---
-            $pd = Get-CimInstance Win32_PerfFormattedData_PerfDisk_PhysicalDisk -Filter "Name='_Total'"
-            $diskAct = 100 - [double]$pd.PercentIdleTime          # アイドル率の裏＝ビジー率
-            if ($diskAct -lt 0) { $diskAct = 0 } elseif ($diskAct -gt 100) { $diskAct = 100 }
-            $diskR = [double]$pd.DiskReadBytesPersec
-            $diskW = [double]$pd.DiskWriteBytesPersec
-
-            # --- ディスク容量（固定ドライブ DriveType=3 の使用率）---
-            $volLine = ((Get-CimInstance Win32_LogicalDisk -Filter "DriveType=3") | ForEach-Object {
-                '{0} {1:N0}% ({2:N0}/{3:N0}GB)' -f $_.DeviceID, (($_.Size - $_.FreeSpace) / $_.Size * 100), (($_.Size - $_.FreeSpace) / 1GB), ($_.Size / 1GB)
-            }) -join '   '
-
-            # --- ネットワーク速度（全IF合計の受信/送信バイト/秒）---
-            $net = Get-CimInstance Win32_PerfFormattedData_Tcpip_NetworkInterface
-            $netRx = [double](($net | Measure-Object BytesReceivedPersec -Sum).Sum)
-            $netTx = [double](($net | Measure-Object BytesSentPersec -Sum).Sum)
-
-            # --- 描画（左上へ戻し、カーソル以降を消去して上書き＝ちらつき防止）---
-            [Console]::SetCursorPosition(0, 0)
-            [Console]::Write("$ESC[0J")
-
-            Write-Host ('  System Dashboard      ' + (Get-Date -Format 'HH:mm:ss')) -ForegroundColor Cyan
-            Write-Host ''
-            Write-Host '   CPU  ' -NoNewline
-            Write-Host ('{0}  {1,5:N1} %' -f (_Bar $cpu), $cpu) -ForegroundColor (_Col $cpu)
-            Write-Host '   MEM  ' -NoNewline
-            Write-Host ('{0}  {1,5:N1} %   {2:N0} / {3:N0} MB' -f (_Bar $memPct), $memPct, $memUsedMB, $memTotalMB) -ForegroundColor (_Col $memPct)
-            Write-Host '   GPU  ' -NoNewline
-            Write-Host ('{0}  {1,5:N1} %   Intel Arc' -f (_Bar $gpu), $gpu) -ForegroundColor (_Col $gpu)
-            if ($topEng) { Write-Host ('        ' + $topEng) -ForegroundColor DarkGray }
-            Write-Host '   DISK ' -NoNewline
-            Write-Host ('{0}  {1,5:N1} %   R {2}  W {3}' -f (_Bar $diskAct), $diskAct, (_Rate $diskR), (_Rate $diskW)) -ForegroundColor (_Col $diskAct)
-            Write-Host ('        cap: ' + $volLine) -ForegroundColor DarkGray
-            Write-Host '   NET  ' -NoNewline
-            Write-Host ('down {0}    up {1}' -f (_Rate $netRx), (_Rate $netTx)) -ForegroundColor Green
-            Write-Host ''
-            Write-Host '  Ctrl+C : quit' -ForegroundColor DarkGray
-
-            Start-Sleep -Seconds $IntervalSec
-        }
-    }
-    finally {
-        # 後片付け：カーソルを戻し、画面を消してからプロンプトへ返す
-        [Console]::CursorVisible = $true
-        [Console]::SetCursorPosition(0, 0)
-        [Console]::Write("$ESC[0J")
-    }
-}
-
 # --- 円形ゲージ（下が欠けた270°リング＝かじられたバウムクーヘン）ダッシュボード -------
 # 使い方 : Show-SysDash            （約2秒間隔で更新、Ctrl+C で終了）
 #          Show-SysDash -IntervalSec 1
 #          Show-SysDash -Once       （1回だけ描画。動作確認/スナップショット用）
 # 仕組み : .NET System.Drawing で CPU/MEM/GPU/DISK/BAT の円弧ゲージPNGをメモリ上に生成し、
 #          WezTerm のインライン画像プロトコル(iTerm2形式)で端末内へ埋め込み表示する。
-# 前提   : 画像表示対応の端末（WezTerm 等）が必要。値の取得元は Show-SysBar と同じCIM。
+# 前提   : 画像表示対応の端末（WezTerm 等）が必要。値の取得元はすべて CIM（ロケール非依存・高速）。
 # 色     : 負荷で緑(#9ece6a)→黄(#e0af68)→赤(#f7768e)。配色は Tokyo Night。
 function Show-SysDash {
     param([double]$IntervalSec = 2, [switch]$Once)

@@ -34,6 +34,14 @@ return {
     { key = "p", mods = "ALT",        action = act.ActivateCommandPalette },
     { key = "p", mods = "SHIFT|CTRL", action = act.ActivateCommandPalette },
 
+    -- ランチャーメニュー（config.launch_menuの一覧から選んで新規タブで開く）
+    { key = "m", mods = "LEADER", action = act.ShowLauncherArgs({ flags = "LAUNCH_MENU_ITEMS" }) },
+
+    -- Muxドメイン"mux"へ明示的にアタッチ（閉じる前のタブが残っていれば復元される）
+    -- ※ act.AttachDomain は文字列引数（ドメイン名）を取る。テーブルを渡すとLuaエラーになり
+    --   設定ファイル全体の読み込みに失敗するので注意（2026-07-22に実際に踏んだ）。
+    { key = "M", mods = "LEADER|SHIFT", action = act.AttachDomain("mux") },
+
     -- タブ移動
     { key = "Tab", mods = "CTRL",       action = act.ActivateTabRelative(1) },
     { key = "Tab", mods = "SHIFT|CTRL", action = act.ActivateTabRelative(-1) },
@@ -59,6 +67,12 @@ return {
     -- ペイン作成
     { key = "d", mods = "LEADER", action = act.SplitVertical({ domain = "CurrentPaneDomain" }) },
     { key = "r", mods = "LEADER", action = act.SplitHorizontal({ domain = "CurrentPaneDomain" }) },
+
+    -- コーディング用レイアウトを新規タブで開く（左Neovim・右Claude Code）
+    { key = "n", mods = "LEADER", action = act.EmitEvent("spawn-coding-tab") },
+
+    -- KITプロキシ(kit_proxy)を設定した上でClaude Codeを新規タブで起動
+    { key = "c", mods = "LEADER", action = act.EmitEvent("spawn-kit-proxy-claude") },
 
     -- ペインを閉じる
     { key = "x", mods = "LEADER", action = act({ CloseCurrentPane = { confirm = true } }) },
