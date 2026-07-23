@@ -1,6 +1,7 @@
 {
     "files.autoSave": "afterDelay",
     "security.workspace.trust.untrustedFiles": "open",
+    "python.defaultInterpreterPath": "c:\\Users\\<USERNAME>\\AppData\\Local\\Programs\\Python\\Python313\\python.exe",
     "explorer.confirmDragAndDrop": false,
     "redhat.telemetry.enabled": true,
     "vscode-edge-devtools.webhintInstallNotification": true,
@@ -30,6 +31,7 @@
     "chat.mcp.autostart": "newAndOutdated",
     "workbench.secondarySideBar.defaultVisibility": "hidden",
     "geminicodeassist.inlineSuggestions.enableAuto": true,
+    "geminicodeassist.project": "semiotic-module-r75q2",
     "launch": {
         "configurations": [
         
@@ -48,7 +50,12 @@
     "accessibility.signals.chatUserActionRequired": {
         "sound": "on"
     },
-    "chat.tools.terminal.autoApprove": {},
+    "chat.tools.terminal.autoApprove": {
+        "/^PowerShell -Command \"\\(Get-Content 'c:\\\\Users\\\\<USERNAME>\\\\Documents\\\\KIT\\\\03_Individual\\\\html\\\\成績管理\\\\College Hub ver1\\.0\\.html' \\| Measure-Object -Line\\)\\.Lines\"$/": {
+            "approve": true,
+            "matchCommandLine": true
+        }
+    },
     "chat.viewSessions.orientation": "stacked",
     "chat.tools.urls.autoApprove": {
         "https://code.visualstudio.com": true,
@@ -94,6 +101,11 @@
     "network.meteredConnection": "off",
     "chat.agent.sandbox.allowNetwork": true,
     "docker.extension.dockerEngineAvailabilityPrompt": false,
+    "remote.SSH.remotePlatform": {
+        "DiscordBotServer": "linux",
+        "DiscordBot-Home": "linux",
+        "DiscordBot": "linux"
+    },
     "explorer.fileNesting.patterns": {
         "*.ts": "${capture}.js",
         "*.js": "${capture}.js.map, ${capture}.min.js, ${capture}.d.ts",
