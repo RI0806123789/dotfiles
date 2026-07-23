@@ -11,6 +11,7 @@
 | `starship/` | プロンプト設定 | `~/.config/starship.toml` |
 | `powershell/` | PowerShellプロファイル | `$PROFILE` (`Documents\WindowsPowerShell\`) |
 | `git/` | Git設定 | `~/.gitconfig` |
+| `vscode/` | VSCodeユーザー設定(settings/keybindings) | `%APPDATA%\Code\User\` |
 
 ## セットアップ(別PCで使う場合)
 
