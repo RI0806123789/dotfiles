@@ -1,0 +1,22 @@
+{
+  "permissions": {
+    "defaultMode": "auto"
+  },
+  "enableWorkflows": true,
+  "statusLine": {
+    "type": "command",
+    "command": "bash ~/.claude/statusline-command.sh"
+  },
+  "enabledPlugins": {
+    "pyright-lsp@claude-plugins-official": true,
+    "jdtls-lsp@claude-plugins-official": true
+  },
+  "language": "Japanese",
+  "effortLevel": "xhigh",
+  "autoUpdatesChannel": "latest",
+  "theme": "auto",
+  "editorMode": "normal",
+  "remoteControlAtStartup": true,
+  "inputNeededNotifEnabled": true,
+  "agentPushNotifEnabled": true
+}
