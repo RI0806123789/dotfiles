@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "plugins": {
+    "pyright-lsp@claude-plugins-official": [
+      {
+        "scope": "user",
+        "installPath": "C:\\Users\\<USERNAME>\\.claude\\plugins\\cache\\claude-plugins-official\\pyright-lsp\\1.0.0",
+        "version": "1.0.0",
+        "installedAt": "2026-07-11T12:54:14.227Z",
+        "lastUpdated": "2026-07-11T12:54:14.227Z"
+      }
+    ],
+    "jdtls-lsp@claude-plugins-official": [
+      {
+        "scope": "user",
+        "installPath": "C:\\Users\\<USERNAME>\\.claude\\plugins\\cache\\claude-plugins-official\\jdtls-lsp\\1.0.0",
+        "version": "1.0.0",
+        "installedAt": "2026-07-11T14:11:03.894Z",
+        "lastUpdated": "2026-07-11T14:11:03.894Z"
+      }
+    ]
+  }
+}

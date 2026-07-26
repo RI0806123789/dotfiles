@@ -1,0 +1,13 @@
+# .claude/ には APIキー・認証トークン・会話履歴・自動メモリ等の機密情報が
+# 大量に含まれるため、デフォルトで全て無視し、共有してよいものだけ明示的に許可する。
+.claude/*
+
+!.claude/settings.json
+!.claude/statusline-command.sh
+
+!.claude/skills/
+!.claude/skills/**
+
+!.claude/plugins/
+.claude/plugins/*
+!.claude/plugins/installed_plugins.json

@@ -12,6 +12,12 @@
 | `powershell/` | PowerShellプロファイル | `$PROFILE` (`Documents\WindowsPowerShell\`) |
 | `git/` | Git設定 | `~/.gitconfig` |
 | `vscode/` | VSCodeユーザー設定(settings/keybindings) | `%APPDATA%\Code\User\` |
+| `.claude/` | Claude Code設定(一部のみ) | `~/.claude/` |
+
+> **注意**: `~/.claude/` には認証情報・会話履歴・自動メモリ等の機微情報が大量に
+> 含まれるため、`.claude/` はディレクトリ全体をリンクせず、`.gitignore` で許可した
+> 一部ファイル（`settings.json` / `statusline-command.sh` / `skills/` / `plugins/installed_plugins.json`）
+> のみを個別にコピーして管理する。シンボリックリンクは張らないこと。
 
 ## セットアップ(別PCで使う場合)
 
