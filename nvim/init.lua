@@ -92,7 +92,6 @@ require("lazy").setup({
         config = {
           week_header = { enable = true },
           
-          -- ★ここを追加: プロジェクトパスにスペースが含まれていても安全に開けるように修正
           project = {
             enable = true,
             action = function(path)
@@ -167,7 +166,7 @@ require("lazy").setup({
     dependencies = {
       "hrsh7th/cmp-buffer",       
       "hrsh7th/cmp-path",         
-      "hrsh7th/cmp-nvim-lsp",     -- ★追加: LSPからの補完ソース
+      "hrsh7th/cmp-nvim-lsp",     
       "L3MON4D3/LuaSnip",         
       "saadparwaiz1/cmp_luasnip", 
     },
@@ -193,7 +192,7 @@ require("lazy").setup({
           end, { 'i', 's' }),
         }),
         sources = cmp.config.sources({
-          { name = 'nvim_lsp' }, -- ★追加: LSPによる高度な補完を最優先
+          { name = 'nvim_lsp' },
           { name = 'luasnip' },
           { name = 'buffer' },
           { name = 'path' },
@@ -246,7 +245,6 @@ require("lazy").setup({
 
       local capabilities = cmp_lsp.default_capabilities()
       
-      -- setup_handlersが存在するかどうかも確認してから実行
       if type(mason_lsp.setup_handlers) == "function" then
         mason_lsp.setup_handlers({
           function(server_name)
@@ -277,9 +275,8 @@ require("lazy").setup({
           },
           lualine_z = { 
             'location',
-            -- ★ここに追加: 現在時刻を表示
             function()
-              return os.date('%H:%M') -- 秒まで表示したい場合は '%H:%M:%S'
+              return os.date('%H:%M:%S') -- 秒まで表示したい場合は '%H:%M:%S'
             end
           }
         }
@@ -488,7 +485,7 @@ require("lazy").setup({
       vim.cmd("TransparentEnable")
     end
   },
--- 23. mini.animate (究極の滑らかアニメーション)
+-- 24. mini.animate (究極の滑らかアニメーション)
 -- 既存の mini.animate の設定を以下のように変更
   {
   "echasnovski/mini.animate",
