@@ -14,9 +14,15 @@
   "language": "Japanese",
   "effortLevel": "xhigh",
   "autoUpdatesChannel": "latest",
+  "voice": {
+    "enabled": true,
+    "mode": "hold"
+  },
   "theme": "auto",
   "editorMode": "normal",
+  "preferredNotifChannel": "auto",
   "remoteControlAtStartup": true,
   "inputNeededNotifEnabled": true,
-  "agentPushNotifEnabled": true
+  "agentPushNotifEnabled": true,
+  "voiceEnabled": true
 }

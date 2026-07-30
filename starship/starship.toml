@@ -19,6 +19,9 @@ $character"""
 
 add_newline = true
 palette = "tokyonight"
+# Windows環境（OneDrive同期・junctionの多いホームディレクトリ）だと
+# デフォルト30msでは足りずタイムアウト警告が出るため引き上げ
+scan_timeout = 200
 
 [directory]
 style = 'bold fg:dark_blue'
