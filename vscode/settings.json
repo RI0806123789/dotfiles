@@ -50,6 +50,12 @@
     "accessibility.signals.chatUserActionRequired": {
         "sound": "on"
     },
+    "chat.tools.terminal.autoApprove": {
+        "/^PowerShell -Command \"\\(Get-Content 'c:\\\\Users\\\\liang\\\\Documents\\\\KIT\\\\03_Individual\\\\html\\\\成績管理\\\\College Hub ver1\\.0\\.html' \\| Measure-Object -Line\\)\\.Lines\"$/": {
+            "approve": true,
+            "matchCommandLine": true
+        }
+    },
     "chat.viewSessions.orientation": "stacked",
     "chat.tools.urls.autoApprove": {
         "https://code.visualstudio.com": true,

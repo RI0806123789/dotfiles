@@ -3,7 +3,7 @@ local config = wezterm.config_builder()
 
 config.automatically_reload_config = true
 config.font = wezterm.font("JetBrainsMono Nerd Font Mono")
-config.font_size = 9
+config.font_size = 9.5
 config.use_ime = true
 
 config.unix_domains = {
@@ -11,8 +11,8 @@ config.unix_domains = {
 }
 
 -- 透過・ぼかし
-config.win32_system_backdrop = "Acrylic"
-config.window_background_opacity = 0.85
+-- config.win32_system_backdrop = "Acrylic"
+config.window_background_opacity = 0.9
 
 -- レンダラー・パフォーマンス
 config.front_end = "OpenGL"
@@ -25,6 +25,11 @@ config.cursor_blink_rate = 500
 -- 点滅の出入りを滑らかなイージングにする（ぬるっとしたフェード）
 config.cursor_blink_ease_in = "EaseIn"
 config.cursor_blink_ease_out = "EaseOut"
+
+-- ANSIエスケープ(\e[5m等)による点滅テキストも、カーソルと同じくイージングで滑らかにする
+config.text_blink_rate = 500
+config.text_blink_ease_in = "EaseIn"
+config.text_blink_ease_out = "EaseOut"
 
 -- カラースキーム
 config.color_scheme = "Tokyo Night"
@@ -47,6 +52,12 @@ config.window_padding = {
 
 -- スクロールバー非表示
 config.enable_scroll_bar = false
+
+-- マウスバインディング（キーボード駆動が基本だが、右クリック貼り付けだけは残しておく）
+config.mouse_bindings = {
+  -- 右クリックでクリップボードの内容を貼り付け（テキスト選択中は選択範囲のコピー扱いになる）
+  { event = { Down = { streak = 1, button = "Right" } }, mods = "NONE", action = wezterm.action.PasteFrom("Clipboard") },
+}
 
 -- ベル無効（音は鳴らさない）
 config.audible_bell = "Disabled"
@@ -139,6 +150,51 @@ wezterm.on("spawn-coding-tab", function(window, pane)
 
   -- 右ペイン: Claude Code（右側に幅35%で分割）
   local right_pane = left_pane:split({ direction = "Right", size = 0.35, cwd = cwd })
+  right_pane:send_text("claude\r")
+
+  left_pane:activate()
+end)
+
+----------------------------------------------------
+-- KITプロキシ経由のコーディング用レイアウトを新規タブで開く
+-- （左: Neovim / 右: kit_proxy設定済みのClaude Code）
+-- キーは keybinds.lua の Leader → C
+----------------------------------------------------
+wezterm.on("spawn-kit-proxy-claude", function(window, pane)
+  local mux_window = window:mux_window()
+
+  local cwd_uri = pane:get_current_working_dir()
+  local cwd = cwd_uri and cwd_uri.file_path or nil
+
+  -- 左ペイン: Neovim（spawn-coding-tabと同様、CurrentPaneDomainで作成）
+  local tab = mux_window:spawn_tab({ cwd = cwd, domain = "CurrentPaneDomain" })
+  local left_pane = tab:active_pane()
+  left_pane:send_text("nvim\r")
+
+  -- 右ペイン: kit_proxy実行後にClaude Code（右側に幅35%で分割）
+  local right_pane = left_pane:split({ direction = "Right", size = 0.35, cwd = cwd })
+
+  -- kit_proxy.bat（C:\tools\kit_proxy.bat）はプロキシ環境変数を設定した後、
+  -- `cmd /k` で新しいcmdシェルに常駐する設計。そのcmdシェルへの切り替えが
+  -- 完了する前にclaudeを送るとPowerShell側に取りこぼされる。固定sleep(800ms)
+  -- では新規タブのシェル起動時間のばらつきで間に合わないことが実測で確認できた
+  -- （2026-07-23）ため、フォアグラウンドプロセスがcmd.exeになるまでポーリングで
+  -- 待ってから送る（最大5秒、取得APIが使えない環境向けに2秒のフォールバックも兼ねる）。
+  right_pane:send_text("kit_proxy\r")
+  local switched = false
+  for _ = 1, 50 do
+    wezterm.sleep_ms(100)
+    local ok, proc = pcall(function()
+      return right_pane:get_foreground_process_name()
+    end)
+    if ok and proc and proc:lower():find("cmd.exe", 1, true) then
+      switched = true
+      break
+    end
+  end
+  if not switched then
+    wezterm.sleep_ms(2000)
+  end
   right_pane:send_text("claude\r")
 
   left_pane:activate()
@@ -354,10 +410,14 @@ end)
 -- ランチャーメニュー（Leader → M で開く。config.launch_menuの一覧から選んで新規タブで起動）
 ----------------------------------------------------
 config.launch_menu = {
-  { label = "PowerShell",  args = { "powershell.exe", "-NoLogo" } },
-  { label = "WSL",         args = { "wsl.exe" } },
-  { label = "Neovim",      args = { "nvim" } },
-  { label = "Claude Code", args = { "claude" } },
+  { label = "PowerShell",     args = { "powershell.exe", "-NoLogo" } },
+  { label = "WSL",            args = { "wsl.exe" } },
+  { label = "Neovim",         args = { "nvim" } },
+  { label = "Claude Code",    args = { "claude" } },
+  -- kit_proxy.bat（プロキシ環境変数を設定後、cmd /k で常駐するスクリプト）を
+  -- 単体で起動したい時用。左Neovim・右Claude Codeのレイアウトごと開きたい場合は
+  -- 従来通り Leader+c（spawn-kit-proxy-claude）を使う
+  { label = "KIT Proxy起動", args = { "cmd.exe", "/k", "C:\\tools\\kit_proxy.bat" } },
 }
 
 ----------------------------------------------------
