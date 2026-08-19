@@ -3,7 +3,7 @@ local config = wezterm.config_builder()
 
 config.automatically_reload_config = true
 config.font = wezterm.font("JetBrainsMono Nerd Font Mono")
-config.font_size = 9.5
+config.font_size = 9.5 
 config.use_ime = true
 
 config.unix_domains = {
@@ -12,7 +12,7 @@ config.unix_domains = {
 
 -- 透過・ぼかし
 -- config.win32_system_backdrop = "Acrylic"
-config.window_background_opacity = 0.9
+config.window_background_opacity = 1
 
 -- レンダラー・パフォーマンス
 config.front_end = "OpenGL"
@@ -411,6 +411,9 @@ end)
 ----------------------------------------------------
 config.launch_menu = {
   { label = "PowerShell",     args = { "powershell.exe", "-NoLogo" } },
+  -- autosuggestion(PredictionSource)はPowerShell 7.1+必須のためpwsh限定。
+  -- 通常のPowerShellと使い分けたい場合はこちらから起動する。
+  { label = "PowerShell 7",   args = { "pwsh.exe", "-NoLogo" } },
   { label = "WSL",            args = { "wsl.exe" } },
   { label = "Neovim",         args = { "nvim" } },
   { label = "Claude Code",    args = { "claude" } },

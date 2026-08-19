@@ -123,7 +123,13 @@ require("lazy").setup({
         sort = { sorter = "case_sensitive" },
         view = { width = 30 },
         renderer = { group_empty = true },
-        filters = { dotfiles = false },
+        -- dotfiles / .gitignore 対象ファイルもツリーに表示する
+        filters = { dotfiles = false, git_ignored = false },
+        -- ゴミ箱へ移動する。trash-cli(npm)はバックスラッシュ区切りパスを正しく扱えないため、
+        -- scripts/nvim-trash.cmd でスラッシュに変換してから渡している
+        trash = {
+          cmd = (os.getenv("USERPROFILE") or "") .. [[\Documents\GitHub\dotfiles\scripts\nvim-trash.cmd]],
+        },
       })
     end,
   },
@@ -496,6 +502,7 @@ require("lazy").setup({
   config = function()
     require("mini.animate").setup({
       cursor = { enable = false }, -- smear-cursorと競合するためオフにする
+      scroll = { enable = false }, -- neoscrollと二重に発火して重くなるためオフにする（見た目のスクロールアニメーションはneoscroll側がそのまま担当）
     })
   end
   },
@@ -548,17 +555,6 @@ require("lazy").setup({
       })
     end
   },
--- 27. mini.indentscope (アニメーションするインデントガイド)
-  {
-    "echasnovski/mini.indentscope",
-    version = "*",
-    config = function()
-      require("mini.indentscope").setup({
-        symbol = "│",
-        options = { try_as_border = true },
-      })
-    end
-  }, -- ←★ここにカンマ(,)を追記します
 
 -- 28. vim-quickrun (プログラムの即時実行)
   {

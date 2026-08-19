@@ -67,6 +67,8 @@ function Set-WezVar {
 #          Show-SysDash -Once       （1回だけ描画。動作確認/スナップショット用）
 # 仕組み : .NET System.Drawing で CPU/MEM/GPU/DISK/BAT の円弧ゲージPNGをメモリ上に生成し、
 #          WezTerm のインライン画像プロトコル(iTerm2形式)で端末内へ埋め込み表示する。
+#          CPU/GPUラベルの下にはハードウェアのモデル名、BATラベルの下には充電中なら
+#          満充電までの時間、放電中なら残り駆動時間を1行追加で表示する。
 # 前提   : 画像表示対応の端末（WezTerm 等）が必要。値の取得元はすべて CIM（ロケール非依存・高速）。
 # 色     : 負荷で緑(#9ece6a)→黄(#e0af68)→赤(#f7768e)。配色は Tokyo Night。
 function Show-SysDash {
@@ -82,8 +84,69 @@ function Show-SysDash {
     function _Accent($p) { if ($p -ge 85) { '#f7768e' } elseif ($p -ge 60) { '#e0af68' } else { '#9ece6a' } }
     # バッテリー：低いほど危険（＝逆。少ないと赤）
     function _AccentBat($p) { if ($p -le 15) { '#f7768e' } elseif ($p -le 30) { '#e0af68' } else { '#9ece6a' } }
+    # CIMのモデル名から (R)/(TM) 等の商標記号を除去して読みやすくする
+    function _CleanModel($s) { ($s -replace '\(R\)', '' -replace '\(TM\)', '' -replace '\s{2,}', ' ').Trim() }
 
-    # 値の配列（Label/Pct）から横並びゲージPNGを生成し byte[] を返す
+    # バッテリーの補足時間文字列を返す（放電中=残り駆動時間、充電中=満充電までの時間）
+    # $b0 : Get-CimInstance Win32_Battery の1件分のインスタンス
+    # 注意: Win32_Battery.BatteryStatus だけでは実機で状態を正しく判定できないことがある
+    #       （AC接続中でも値が"2"のまま実際は放電している端末があるのを実機検証で確認済み）。
+    #       そのため充電/放電の判定自体は root\WMI\BatteryStatus の Charging/Discharging
+    #       ブール値を優先して使い、より確実な方を採用する。
+    function _BatTimeText($b0) {
+        try {
+            $bs = Get-CimInstance -Namespace root\WMI -ClassName BatteryStatus -ErrorAction Stop | Select-Object -First 1
+        } catch {
+            $bs = $null
+        }
+
+        if ($bs -and $bs.Charging) {
+            # 充電中: (満充電容量 - 残容量) / 充電レート から満充電までの時間を算出
+            try {
+                $fc = Get-CimInstance -Namespace root\WMI -ClassName BatteryFullChargedCapacity -ErrorAction Stop | Select-Object -First 1
+                $rate = [double]$bs.ChargeRate
+                if ($rate -gt 0) {
+                    $min = ([double]$fc.FullChargedCapacity - [double]$bs.RemainingCapacity) / $rate * 60
+                    if ($min -gt 0) {
+                        $h = [int]($min / 60); $m = [int]($min % 60)
+                        # "H:MM"表記だとMM:SS(分:秒)と誤読しやすいため、単位付きの"○h○m"表記にする
+                        return ('{0}h{1:D2}m to full' -f $h, $m)
+                    }
+                }
+            } catch {}
+            return ''
+        } elseif ($bs -and $bs.PowerOnline -and -not $bs.Charging) {
+            # AC接続中だが充電はしていない状態（満充電付近での充電保護など）。
+            # このときDischargingがTrueでもDischargeRateはごく僅かな微放電でしかなく、
+            # そこから逆算した「残り時間」は実際に電源を抜いた場合の駆動時間として無意味
+            # （実機で462mWのような極端に低いレートから「残り101時間」等の数字が出て誤解を招いた）。
+            # そのため時間換算はせず、状態そのものを短く表示する。
+            if ($b0.BatteryStatus -eq 3) { return 'Full' }
+            return 'AC'
+        } elseif ($bs -and $bs.Discharging) {
+            # 放電中（AC非接続の純粋なバッテリー駆動）: まずEstimatedRunTime（分）を使う。
+            # 71582788 は「不明」を示すセンチネル値。取れない場合は RemainingCapacity / DischargeRate から概算する。
+            $runMin = $b0.EstimatedRunTime
+            if ($runMin -and $runMin -gt 0 -and $runMin -lt 71582788) {
+                $h = [int]($runMin / 60); $m = [int]($runMin % 60)
+                # "H:MM"表記だとMM:SS(分:秒)と誤読しやすいため、単位付きの"○h○m"表記にする
+                return ('{0}h{1:D2}m left' -f $h, $m)
+            }
+            $rate = [double]$bs.DischargeRate
+            if ($rate -gt 0) {
+                $min = [double]$bs.RemainingCapacity / $rate * 60
+                $h = [int]($min / 60); $m = [int]($min % 60)
+                return ('{0}h{1:D2}m left' -f $h, $m)
+            }
+            return ''
+        } elseif ($b0.BatteryStatus -eq 3) {
+            return 'Full'
+        }
+        return ''
+    }
+
+    # 値の配列（Label/Pct/Sub）から横並びゲージPNGを生成し byte[] を返す
+    # Sub : ラベルの下にもう1行添える補足文字列（モデル名やバッテリー時間など。無ければ空文字）
     function _RenderPng($items) {
         $gw = 220; $n = $items.Count; $W = $gw * $n; $H = 250; $radius = 78
         $bmp = [System.Drawing.Bitmap]::new($W, $H)
@@ -123,6 +186,25 @@ function Show-SysDash {
             $bl = [System.Drawing.SolidBrush]::new((_Hex '#7aa2f7'))
             $g.DrawString($label, $fl, $bl, [single]($cx - $sl.Width / 2), [single]($cy + $radius * 0.62))
 
+            # ラベルのさらに下に補足情報（モデル名／バッテリー時間）を1行。
+            # セル幅(gw)に収まらない場合はフォントを縮めて必ず1行に収める。
+            $sub = [string]$items[$i].Sub
+            if ($sub) {
+                $maxW = $gw - 16
+                $subSize = [single]($radius * 0.15)
+                $fs = [System.Drawing.Font]::new('Segoe UI', $subSize, [System.Drawing.FontStyle]::Regular)
+                $ss = $g.MeasureString($sub, $fs)
+                while ($ss.Width -gt $maxW -and $subSize -gt 6) {
+                    $fs.Dispose()
+                    $subSize = [single]($subSize - 0.5)
+                    $fs = [System.Drawing.Font]::new('Segoe UI', $subSize, [System.Drawing.FontStyle]::Regular)
+                    $ss = $g.MeasureString($sub, $fs)
+                }
+                $bs2 = [System.Drawing.SolidBrush]::new((_Hex '#565f89'))
+                $g.DrawString($sub, $fs, $bs2, [single]($cx - $ss.Width / 2), [single]($cy + $radius * 0.62 + $sl.Height + 2))
+                $fs.Dispose(); $bs2.Dispose()
+            }
+
             $track.Dispose(); $fp.Dispose(); $fl.Dispose(); $bt.Dispose(); $bl.Dispose()
         }
         $ms = [System.IO.MemoryStream]::new()
@@ -143,19 +225,20 @@ function Show-SysDash {
         $disk = 100 - [double]$pd.PercentIdleTime
         if ($disk -lt 0) { $disk = 0 } elseif ($disk -gt 100) { $disk = 100 }
 
-        # 使用率系（高いほど危険で色付け）
+        # 使用率系（高いほど危険で色付け）。CPU/GPUはSubにモデル名（起動時に1度だけ取得済み）を添える
         $list = @(
-            [pscustomobject]@{ Label = 'CPU';  Pct = $cpu;  Accent = (_Accent $cpu) },
-            [pscustomobject]@{ Label = 'MEM';  Pct = $mem;  Accent = (_Accent $mem) },
-            [pscustomobject]@{ Label = 'GPU';  Pct = $gpu;  Accent = (_Accent $gpu) },
-            [pscustomobject]@{ Label = 'DISK'; Pct = $disk; Accent = (_Accent $disk) }
+            [pscustomobject]@{ Label = 'CPU';  Pct = $cpu;  Accent = (_Accent $cpu);  Sub = $cpuModel },
+            [pscustomobject]@{ Label = 'MEM';  Pct = $mem;  Accent = (_Accent $mem);  Sub = '' },
+            [pscustomobject]@{ Label = 'GPU';  Pct = $gpu;  Accent = (_Accent $gpu);  Sub = $gpuModel },
+            [pscustomobject]@{ Label = 'DISK'; Pct = $disk; Accent = (_Accent $disk); Sub = '' }
         )
 
-        # バッテリー残量（ノートPC等でのみ存在。低いほど危険で色付け）
+        # バッテリー残量（ノートPC等でのみ存在。低いほど危険で色付け）。Subに充電/放電の時間を添える
         $b = Get-CimInstance Win32_Battery
         if ($b) {
-            $batPct = [double](@($b)[0].EstimatedChargeRemaining)
-            $list += [pscustomobject]@{ Label = 'BAT'; Pct = $batPct; Accent = (_AccentBat $batPct) }
+            $b0 = @($b)[0]
+            $batPct = [double]$b0.EstimatedChargeRemaining
+            $list += [pscustomobject]@{ Label = 'BAT'; Pct = $batPct; Accent = (_AccentBat $batPct); Sub = (_BatTimeText $b0) }
         }
         return , $list
     }
@@ -171,6 +254,10 @@ function Show-SysDash {
     $null = Get-CimInstance Win32_PerfFormattedData_PerfOS_Processor
     $null = Get-CimInstance Win32_PerfFormattedData_GPUPerformanceCounters_GPUEngine
     $null = Get-CimInstance Win32_PerfFormattedData_PerfDisk_PhysicalDisk
+
+    # CPU/GPUのモデル名は起動中に変わらないためループ開始前に1度だけ取得（_Collectから参照される）
+    $cpuModel = _CleanModel (Get-CimInstance Win32_Processor | Select-Object -First 1 -ExpandProperty Name)
+    $gpuModel = _CleanModel (Get-CimInstance Win32_VideoController | Select-Object -First 1 -ExpandProperty Name)
 
     if ($Once) {
         _EmitFrame
@@ -192,4 +279,23 @@ function Show-SysDash {
         [Console]::CursorVisible = $true
         [Console]::Out.Write("$ESC[2J$ESC[H")   # 画面をクリアしてプロンプトへ
     }
+}
+
+# --- PSReadLine: syntax highlighting（配色をTokyo Nightに合わせる）--------------------
+# 注意: Windows PowerShell 5.1 同梱の PSReadLine は 2.0.0 と古く、
+#       autosuggestion(PredictionSource / PredictionViewStyle)には非対応（PowerShell 7.1+が必須）。
+#       ここでは配色カスタマイズのみ適用する。autosuggestionも使いたい場合は
+#       PowerShell 7(pwsh)を使うこと（WezTermのランチャー Leader+M → "PowerShell 7"）。
+Set-PSReadLineOption -Colors @{
+    Command   = '#ae8b2d'  # コマンド名（金／タブのアクティブ色と統一）
+    Parameter = '#7dcfff'  # パラメータ（シアン）
+    Operator  = '#bb9af7'  # 演算子（紫）
+    Variable  = '#ff9e64'  # 変数（オレンジ）
+    String    = '#9ece6a'  # 文字列（緑）
+    Number    = '#e0af68'  # 数値（黄）
+    Type      = '#7dcfff'  # 型（シアン）
+    Comment   = '#565f89'  # コメント（グレー）
+    Keyword   = '#bb9af7'  # キーワード（紫）
+    Member    = '#7dcfff'  # メンバー（シアン）
+    Default   = '#c0caf5'  # 通常テキスト
 }

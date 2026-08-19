@@ -9,15 +9,11 @@
 | `nvim/` | Neovim設定 | `~/.config/nvim/` |
 | `wezterm/` | WezTerm設定・キーバインド | `~/.config/wezterm/` |
 | `starship/` | プロンプト設定 | `~/.config/starship.toml` |
-| `powershell/` | PowerShellプロファイル | `$PROFILE` (`Documents\WindowsPowerShell\`) |
+| `powershell/` | PowerShellプロファイル (Windows PowerShell 5.1) | `$PROFILE` (`Documents\WindowsPowerShell\`) |
+| `powershell7/` | PowerShellプロファイル (PowerShell 7 / pwsh) | `$PROFILE` (`Documents\PowerShell\`) |
 | `git/` | Git設定 | `~/.gitconfig` |
 | `vscode/` | VSCodeユーザー設定(settings/keybindings) | `%APPDATA%\Code\User\` |
 | `claude/` | Claude Code設定(一部のみ) | `~/.claude/` |
-
-> **注意**: `~/.claude/` には認証情報・会話履歴・自動メモリ等の機微情報が大量に
-> 含まれるため、`claude/` はディレクトリ全体をリンクせず、`.gitignore` で許可した
-> 一部ファイル（`settings.json` / `statusline-command.sh` / `skills/` / `plugins/installed_plugins.json`）
-> のみを個別にコピーして管理する。シンボリックリンクは張らないこと。
 
 ## セットアップ(別PCで使う場合)
 
@@ -42,15 +38,16 @@
    Remove-Item ~\.config\starship.toml
    New-Item -ItemType SymbolicLink -Path ~\.config\starship.toml -Target Documents\GitHub\dotfiles\starship\starship.toml
 
-   # 例: PowerShellプロファイル
+   # 例: PowerShellプロファイル (Windows PowerShell 5.1)
    Remove-Item $PROFILE
    New-Item -ItemType SymbolicLink -Path $PROFILE -Target Documents\GitHub\dotfiles\powershell\Microsoft.PowerShell_profile.ps1
+
+   # 例: PowerShellプロファイル (PowerShell 7 / pwsh。pwsh上で実行すること)
+   Remove-Item $PROFILE
+   New-Item -ItemType SymbolicLink -Path $PROFILE -Target Documents\GitHub\dotfiles\powershell7\Microsoft.PowerShell_profile.ps1
 
    # 例: Git設定
    Remove-Item ~\.gitconfig
    New-Item -ItemType SymbolicLink -Path ~\.gitconfig -Target Documents\GitHub\dotfiles\git\.gitconfig
    ```
-
-   ※ Windowsでシンボリックリンクを作成するには、管理者権限で実行するか、
-     開発者モードを有効化しておく必要がある。
 

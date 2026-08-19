@@ -11,3 +11,7 @@ claude/*
 !claude/plugins/
 claude/plugins/*
 !claude/plugins/installed_plugins.json
+
+# scripts/sync.log は実行のたびに増える実行時ログで、
+# ローカルのフルパス(ユーザー名を含む)が記録されるため追跡しない。
+scripts/sync.log
