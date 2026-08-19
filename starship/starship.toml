@@ -29,7 +29,7 @@ format = '[$path ]($style)'
 truncation_length = 3
 truncation_symbol = '…/'
 truncate_to_repo = false
-home_symbol = 'C:/Users/<USERNAME>'  # "~"の代わりに実際のホームパスをそのまま表示する
+# home_symbol: 既定の "~" を使う（実ユーザー名を含む固定パスは公開リポジトリに残せないため指定しない）
 
 [directory.substitutions]
 'Documents' = '󰈙'
