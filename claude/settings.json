@@ -13,6 +13,12 @@
   },
   "language": "Japanese",
   "effortLevel": "xhigh",
+  "modelSettings": {
+    "claude-sonnet-5": {
+      "effortLevel": "xhigh"
+    }
+  },
+  "askUserQuestionTimeout": "10m",
   "autoUpdatesChannel": "latest",
   "voice": {
     "enabled": true,

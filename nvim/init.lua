@@ -332,12 +332,55 @@ require("lazy").setup({
     "karb94/neoscroll.nvim",
     config = function()
       require('neoscroll').setup({
-        -- アニメーションの速度調整（ミリ秒）
-        hide_cursor = true,          
-        stop_eof = true,             
-        respect_scrolloff = false,   
-        cursor_scrolls_alone = true, 
+        -- デフォルトはCtrl-u/d/b/f/y/eとzt/zz/zbのみが対象で、
+        -- gg・Gでのジャンプがアニメーションなしで「パッ」と切り替わっていたため追加
+        mappings = {
+          '<C-u>', '<C-d>', '<C-b>', '<C-f>',
+          '<C-y>', '<C-e>', 'zt', 'zz', 'zb',
+          'gg', 'G',
+        },
+        hide_cursor = true,
+        stop_eof = true,
+        respect_scrolloff = false,
+        cursor_scrolls_alone = true,
+        -- 速度・イージングを調整して、より「流れるように」感じられるようにする
+        duration_multiplier = 1.2,
+        easing = "quadratic",
       })
+
+      -- マウスホイールでのスクロールにもアニメーションを効かせる
+      local neoscroll = require('neoscroll')
+      vim.keymap.set('n', '<ScrollWheelUp>', function()
+        neoscroll.scroll(-3, { move_cursor = false, duration = 150 })
+      end, { silent = true })
+      vim.keymap.set('n', '<ScrollWheelDown>', function()
+        neoscroll.scroll(3, { move_cursor = false, duration = 150 })
+      end, { silent = true })
+
+      -- { / } (段落単位のジャンプ) はneoscroll標準の対応キーに含まれず、
+      -- 移動距離も可変なため、実際に移動させて差分を計算してからアニメーションさせる
+      local function animate_motion(motion)
+        return function()
+          local count = vim.v.count1
+          local start_line, start_col = vim.fn.line('.'), vim.fn.col('.')
+          vim.cmd('normal! ' .. count .. motion)
+          local end_line, end_col = vim.fn.line('.'), vim.fn.col('.')
+          local lines = end_line - start_line
+          if lines == 0 then
+            return
+          end
+          vim.fn.cursor(start_line, start_col)
+          local duration = math.min(math.abs(lines) * 8, 300)
+          neoscroll.scroll(lines, { move_cursor = true, duration = duration })
+          -- アニメーション終了後、列位置を正確な着地点に補正する
+          local multiplier = require('neoscroll.config').opts.duration_multiplier or 1
+          vim.defer_fn(function()
+            vim.fn.cursor(end_line, end_col)
+          end, duration * multiplier + 30)
+        end
+      end
+      vim.keymap.set('n', '}', animate_motion('}'), { silent = true })
+      vim.keymap.set('n', '{', animate_motion('{'), { silent = true })
     end
   },
 

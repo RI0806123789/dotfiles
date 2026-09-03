@@ -1,5 +1,28 @@
-﻿# Starship プロンプトを初期化する
-Invoke-Expression (&starship init powershell)
+﻿# Starship プロンプトを初期化する（初期化コードをキャッシュして高速化）
+# 仕組み: `starship init powershell` は既定では「初回プロンプト表示時に starship.exe を
+#         再度呼び直す」ための軽量な遅延ラッパーしか返さず、しかもそのラッパー自体が
+#         内部で Invoke-Expression を使う。この Invoke-Expression による動的パースが
+#         実測で約600ms以上かかっており、Windows PowerShell 起動時に「パーソナル プロファイルと
+#         システム プロファイルの読み込みにかかった時間は 500 ミリ秒です」という警告が出る主因
+#         だった（--print-full-init を使わない限りこの遅延ラッパー自体はキャッシュしても消えない）。
+#         `--print-full-init` で実際のプロンプト定義コードそのものを取得し、Invoke-Expression を
+#         介さずファイルへ保存・直接 dot-source することで短縮する（実測: 約720ms → 約380ms）。
+#         starship.exe が更新されたときだけキャッシュを再生成する。
+$starshipExe = (Get-Command starship -ErrorAction SilentlyContinue).Source
+$starshipCache = "$PSScriptRoot\.starship_init_cache.ps1"
+
+if ($starshipExe -and (
+        -not (Test-Path $starshipCache) -or
+        (Get-Item $starshipExe).LastWriteTime -gt (Get-Item $starshipCache).LastWriteTime
+    )) {
+    & $starshipExe init powershell --print-full-init | Out-File -FilePath $starshipCache -Encoding utf8
+}
+
+if (Test-Path $starshipCache) {
+    . $starshipCache
+} elseif ($starshipExe) {
+    Invoke-Expression (& starship init powershell)
+}
 
 # --- エラー時に wezterm のビジュアルベルを鳴らす -----------------------------------
 # 仕組み: PowerShell は各コマンドの実行後に prompt 関数を呼ぶ。そのタイミングで
@@ -71,6 +94,9 @@ function Set-WezVar {
 #          満充電までの時間、放電中なら残り駆動時間を1行追加で表示する。
 # 前提   : 画像表示対応の端末（WezTerm 等）が必要。値の取得元はすべて CIM（ロケール非依存・高速）。
 # 色     : 負荷で緑(#9ece6a)→黄(#e0af68)→赤(#f7768e)。配色は Tokyo Night。
+# フォールバック : conhost / Windows Terminal 等、iTerm2インライン画像プロトコル非対応の
+#          「純正ターミナル」で実行した場合は、画像の代わりに ANSI truecolor の横棒グラフを
+#          テキストで描画する（_SupportsInlineImage が false のときに自動切替）。
 function Show-SysDash {
     param([double]$IntervalSec = 2, [switch]$Once)
 
@@ -86,6 +112,14 @@ function Show-SysDash {
     function _AccentBat($p) { if ($p -le 15) { '#f7768e' } elseif ($p -le 30) { '#e0af68' } else { '#9ece6a' } }
     # CIMのモデル名から (R)/(TM) 等の商標記号を除去して読みやすくする
     function _CleanModel($s) { ($s -replace '\(R\)', '' -replace '\(TM\)', '' -replace '\s{2,}', ' ').Trim() }
+
+    # 実行中の端末が iTerm2インライン画像プロトコルに対応しているか（＝WezTermかどうか）を判定する。
+    # WezTermは自プロセス配下の子プロセスに必ず TERM_PROGRAM=WezTerm と WEZTERM_PANE を設定するため、
+    # これで conhost / Windows Terminal 等の「純正ターミナル」と確実に区別できる。
+    function _SupportsInlineImage { [bool]($env:TERM_PROGRAM -eq 'WezTerm' -or $env:WEZTERM_PANE) }
+
+    # 16進カラー(#rrggbb) → ANSI truecolor前景色エスケープシーケンス文字列
+    function _Ansi($h) { $c = _Hex $h; "$ESC[38;2;$($c.R);$($c.G);$($c.B)m" }
 
     # バッテリーの補足時間文字列を返す（放電中=残り駆動時間、充電中=満充電までの時間）
     # $b0 : Get-CimInstance Win32_Battery の1件分のインスタンス
@@ -214,6 +248,23 @@ function Show-SysDash {
         return , $bytes    # byte[] をそのまま返す（カンマで配列展開を防ぐ）
     }
 
+    # 画像非対応端末向け：横棒グラフのテキストフレームを1つの文字列で組み立てて返す
+    function _RenderTextFrame($items) {
+        $barWidth = 24
+        $reset = "$ESC[0m"
+        $lines = foreach ($it in $items) {
+            $pct = [math]::Max(0, [math]::Min(100, [double]$it.Pct))
+            $filled = [int][math]::Round($barWidth * $pct / 100)
+            $bar = ('#' * $filled) + ('-' * ($barWidth - $filled))
+            $label = $it.Label.PadRight(4)
+            $pctText = '{0,3:N0}%' -f $pct
+            $line = "  $label " + (_Ansi $it.Accent) + "[$bar]" + $reset + " $pctText"
+            if ($it.Sub) { $line += "  $($it.Sub)" }
+            $line
+        }
+        return ($lines -join "`r`n")
+    }
+
     # 現在値を集めて4項目（CPU/MEM/GPU/DISK）の配列にする
     function _Collect {
         $cpu = [double](Get-CimInstance Win32_PerfFormattedData_PerfOS_Processor -Filter "Name='_Total'").PercentProcessorTime
@@ -243,11 +294,17 @@ function Show-SysDash {
         return , $list
     }
 
-    # 1フレーム分の画像をインライン画像シーケンスで端末へ出力する
+    # 1フレーム分を端末へ出力する。WezTerm等の画像対応端末はインライン画像シーケンス、
+    # conhost / Windows Terminal 等の「純正ターミナル」はANSI横棒グラフのテキストへ自動切替する。
     function _EmitFrame {
-        $png = _RenderPng (_Collect)
-        $b64 = [Convert]::ToBase64String($png)
-        [Console]::Out.Write("$ESC]1337;File=inline=1;size=$($png.Length);preserveAspectRatio=1:$b64$BEL")
+        $items = _Collect
+        if (_SupportsInlineImage) {
+            $png = _RenderPng $items
+            $b64 = [Convert]::ToBase64String($png)
+            [Console]::Out.Write("$ESC]1337;File=inline=1;size=$($png.Length);preserveAspectRatio=1:$b64$BEL")
+        } else {
+            [Console]::Out.Write((_RenderTextFrame $items))
+        }
     }
 
     # WMIプロバイダの初回初期化コストを先に払っておく

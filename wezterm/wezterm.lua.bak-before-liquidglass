@@ -10,10 +10,9 @@ config.unix_domains = {
   { name = "mux" },
 }
 
--- 透過・ぼかし（リキッドガラス風）
--- Windows 11のDWM合成効果(Acrylic=すりガラス)をウィンドウ全体の背景に適用する
-config.win32_system_backdrop = "Acrylic"
-config.window_background_opacity = 0.85
+-- 透過・ぼかし
+-- config.win32_system_backdrop = "Acrylic"
+config.window_background_opacity = 1
 
 -- レンダラー・パフォーマンス
 config.front_end = "OpenGL"
@@ -85,11 +84,6 @@ config.inactive_pane_hsb = {
 }
 
 -- スクロールバック行数
-config.scrollback_lines = 3000
-
-----------------------------------------------------
--- 起動時のウィンドウサイズ（画面に対する比率で決定）
-----------------------------------------------------
 config.scrollback_lines = 3000
 
 ----------------------------------------------------
@@ -431,6 +425,11 @@ config.launch_menu = {
   -- kit_proxy.bat（プロキシ環境変数を設定後、cmd /k で常駐するスクリプト）を
   -- 単体で起動したい時用。左Neovim・右Claude Codeのレイアウトごと開きたい場合は
   -- 従来通り Leader+c（spawn-kit-proxy-claude）を使う
+  { label = "KIT Proxy起動", args = { "cmd.exe", "/k", "C:\\tools\\kit_proxy.bat" } },
+}
+
+----------------------------------------------------
+-- keybinds
 ----------------------------------------------------
 config.disable_default_key_bindings = true
 config.keys = require("keybinds").keys

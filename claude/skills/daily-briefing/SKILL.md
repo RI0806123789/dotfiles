@@ -21,7 +21,33 @@ allowed-tools: [ToolSearch, Bash, PowerShell, mcp__claude_ai_Gmail__search_threa
 ## 共通手順
 
 1. **ツールのロード**: Gmail/Calendar/WebSearch/WebFetchツールが未ロードなら `ToolSearch` で `select:mcp__claude_ai_Gmail__search_threads,mcp__claude_ai_Google_Calendar__list_events,mcp__claude_ai_Google_Calendar__list_calendars,WebSearch,WebFetch` を一括ロードする（個別に何度も呼ばない）。
-2. 居住地は`<在住市区町村>`（本人の環境に合わせて読み替える）、KIT（金沢工業大学）もその近辺のため、カレンダーのタイムゾーンは常に `Asia/Tokyo`、天気検索の地点も特に指定がなければ`<在住市区町村>`を使う。
+2. **現在地の取得**（天気検索に使用。モードによらず1回だけ実行し、結果を朝/昼/夜モードの天気ステップで使い回す）: `PowerShell`で以下を実行し、Windows位置情報API（Wi-Fiベース測位）→ Nominatim（OpenStreetMap）逆ジオコーディングの順で現在地の市区町村名を取得する。
+
+   ```powershell
+   Add-Type -AssemblyName System.Device
+   $watcher = New-Object System.Device.Location.GeoCoordinateWatcher
+   $watcher.Start()
+   $t = 0
+   while ($watcher.Status -ne 'Ready' -and $watcher.Status -ne 'Error' -and $t -lt 80) {
+       Start-Sleep -Milliseconds 100; $t++
+   }
+   if ($watcher.Status -eq 'Ready') {
+       $pos = $watcher.Position.Location
+       try {
+           $res = Invoke-RestMethod -Uri "https://nominatim.openstreetmap.org/reverse?lat=$($pos.Latitude)&lon=$($pos.Longitude)&format=json&accept-language=ja&zoom=12" `
+               -Headers @{ "User-Agent" = "daily-briefing-skill" } -TimeoutSec 5
+           $a = $res.address
+           $place = if ($a.city) { $a.city } elseif ($a.town) { $a.town } elseif ($a.county) { $a.county } else { $null }
+           if ($place) { "$($a.province)$place" } else { "GEOCODE_FAILED" }
+       } catch { "GEOCODE_FAILED" }
+   } else { "LOCATION_FAILED" }
+   $watcher.Stop(); $watcher.Dispose()
+   ```
+
+   - 出力が地名（例:「東京都新宿区」）ならそれを天気検索の地点として使う。
+   - `LOCATION_FAILED`／`GEOCODE_FAILED`が返った場合、またはこの手順自体が実行できない環境（WSL/Bash専用環境など）の場合は`<在住市区町村>`（本人の環境に合わせて読み替える）にフォールバックし、出力冒頭で「（現在地取得に失敗したため、自宅住所ベースの天気を表示しています）」と一言添える。
+   - Nominatimは1秒間隔などの節度あるアクセスが利用ポリシー上求められるため、1回の briefing 実行につき呼び出しは1回に留める。
+   - KIT（金沢工業大学）もこの近辺のため、カレンダーのタイムゾーンは常に `Asia/Tokyo` を使う。
 3. メールの検索結果数（`resultCountEstimate`）が表示件数より多い場合、全件を確認したわけではない旨を一言添える。
 4. 機微・プライベートな内容（アダルト系サービス通知等）は要約に留め、詳細な文面を出力に含めない。性的・アダルト系コンテンツ配信サービス（Fantia等）からの通知は「〇〇から新着通知が複数件」のように概要のみに留める。
 5. **試験情報の取得**（モードによらず常に実行）: `mcp__claude_ai_Google_Calendar__list_events`で当日00:00〜当月末23:59（`timeZone: "Asia/Tokyo"`、`orderBy: "startTime"`）を検索する。予定名が「教科名（期末試験／中間試験／小テスト／再試験／追試／テスト／試験）」のように丸括弧で試験関連キーワードが付いているものだけを抽出し、日付・科目名（種別）・場所を日付順に整理する。該当がなければ「直近の試験予定はありません」と明記する。検索範囲は現在のモード（朝/昼/夜）に関わらず常に「当日〜当月末」で固定する。
@@ -34,7 +60,7 @@ allowed-tools: [ToolSearch, Bash, PowerShell, mcp__claude_ai_Gmail__search_threa
    - `IMPORTANT`ラベル、または送信元が公共機関・大学・金融/インフラ系のものは「要確認」として個別見出しで記載。
    - それ以外は送信元/カテゴリ単位でまとめて一覧化（1件ずつ本文引用しない）。
    - 返信・対応が必要そうなメールは明示的に指摘する。
-3. **天気**: `WebSearch`で`"<在住市区町村> 天気 今日 <current date>"`を検索。最高/最低気温・降水確率・天候を取得し、服装を提案する。
+3. **天気**: 共通手順2で取得した現在地（取得失敗時は`<在住市区町村>`）を使い、`WebSearch`で`"<現在地> 天気 今日 <current date>"`を検索。最高/最低気温・降水確率・天候を取得し、服装を提案する。
    - 目安: 最高気温30℃以上は半袖+通気性重視、25〜29℃は半袖、20〜24℃は長袖1枚、15〜19℃は長袖+薄手の羽織り、14℃以下は上着必須。
    - 降水確率50%以上または「雨」予報なら傘を明記。最高最低差10℃以上なら羽織りものを勧める。
    - **時間帯別の推移**: 検索結果（1時間ごとの予報が載っているページ）から、降水確率や天候が大きく変わるタイミングを1文で要約する（例:「15時ごろから雨が強まる見込み、外出は午前中がおすすめ」）。目立った変化がなければ「一日を通して大きな変化はありません」と明記する。傘を持つべきタイミングの判断材料として使う。
@@ -52,7 +78,7 @@ allowed-tools: [ToolSearch, Bash, PowerShell, mcp__claude_ai_Gmail__search_threa
 
 1. **カレンダー**: 朝モードと同じ条件で当日分を取得したうえで、現在時刻より前に終了したイベントを除外し「残りの予定」として提示する。
 2. **メール**: 朝モードと同じ条件で取得するが、出力するのは「要確認」メールのみ。参考程度のメールは個別列挙せず「その他〇件（プロモーション等）」のように件数だけ触れる。
-3. **天気**: 当日の天気を検索するが、出力は気温・降水確率・傘要否を1〜2行の一言サマリに圧縮する（詳細な服装箇条書きは省略してよい）。現在時刻以降で天候が変わるタイミング（例:「16時以降雨が強まる見込み」）があれば、傘のタイミング判断材料として一言含める。目立った変化がなければ触れなくてよい。
+3. **天気**: 共通手順2で取得した現在地（取得失敗時は`<在住市区町村>`）を使い当日の天気を検索するが、出力は気温・降水確率・傘要否を1〜2行の一言サマリに圧縮する（詳細な服装箇条書きは省略してよい）。現在時刻以降で天候が変わるタイミング（例:「16時以降雨が強まる見込み」）があれば、傘のタイミング判断材料として一言含める。目立った変化がなければ触れなくてよい。
 4. **ニュース**: `WebSearch`は1クエリ（日本語 or 英語どちらか主要な方）に絞り、直近で一番大きいトピックを1〜2行で紹介する程度に留める。提示した情報の分だけSourcesを記載。
 5. **出力**（5セクション）:
    - `# 残りの今日の予定`: 表形式。
@@ -65,7 +91,7 @@ allowed-tools: [ToolSearch, Bash, PowerShell, mcp__claude_ai_Gmail__search_threa
 
 1. **メール（見落としチェック）**: 朝モードと同じ条件で当日分を取得し、「要確認」に該当するメールのうち対応・返信した形跡がなさそうなものを列挙する。なければ「見落としている要確認メールは特にありません」と明記する。参考程度メールは扱わない。
 2. **カレンダー**: 翌日分を取得する（`startTime`翌日00:00〜`endTime`翌々日00:00、`orderBy: "startTime"`、`timeZone: "Asia/Tokyo"`）。終日イベントも含める。
-3. **天気**: `WebSearch`で`"<在住市区町村> 天気 明日 <翌日の日付>"`を検索し、朝モードと同じ基準（時間帯別の推移も含む）でフルの服装提案を行う。
+3. **天気**: 共通手順2で取得した現在地（取得失敗時は`<在住市区町村>`）を使い、`WebSearch`で`"<現在地> 天気 明日 <翌日の日付>"`を検索し、朝モードと同じ基準（時間帯別の推移も含む）でフルの服装提案を行う。
 4. **ニュース**: このモードではセクション自体を省略する（翌朝以降にフル版で確認する想定）。
 5. **出力**（5セクション）:
    - `# 今日の見落としチェック`: 未対応と思われる要確認メールを箇条書き。
