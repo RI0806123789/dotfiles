@@ -18,7 +18,7 @@ config.window_background_opacity = 0.85
 -- レンダラー・パフォーマンス
 config.front_end = "OpenGL"
 -- max_fps: PTYからの実描画（nvimのカーソル移動・スクロール等）の更新頻度。
--- モニター(LCD-A241DBX)の最大リフレッシュレート75Hzに合わせて、
+-- モニター(<MONITOR_MODEL>)の最大リフレッシュレート75Hzに合わせて、
 -- 描画とモニターの描き替えタイミングのズレによるカクつきを解消する。
 config.max_fps = 75
 -- animation_fps: カーソル点滅・ビジュアルベル等の装飾アニメーション専用のfps。

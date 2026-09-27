@@ -1,6 +1,6 @@
 [user]
 	name = RI
-	email = liangzhenyiteng5@gmail.com
+	email = <EMAIL>
 [http]
 	postBuffer = 524288000
 [filter "lfs"]

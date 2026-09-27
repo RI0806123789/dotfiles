@@ -20,7 +20,7 @@
 1. リポジトリをクローンする
 
    ```powershell
-   git clone https://github.com/RI0806123789/dotfiles.git Documents\GitHub\dotfiles
+   git clone https://github.com/<GITHUB_USERNAME>/dotfiles.git Documents\GitHub\dotfiles
    ```
 
 2. 元の配置場所にあるファイルを退避し、代わりにシンボリックリンクを張る

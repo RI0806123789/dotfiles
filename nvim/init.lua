@@ -652,3 +652,151 @@ require("lazy").setup({
   event = { "WinNew" },
   },
 })
+
+-- ===== PDFビューア連携 =========================================================
+-- nvimはバイナリのPDFをそのまま開いても生データが並ぶだけで読めない。そこで2段構えにする。
+--   1) :e foo.pdf  → pdftotext でテキスト抽出し、読み取り専用バッファに表示（/検索・yank可）
+--   2) <leader>p   → SumatraPDF を起動して実物のレイアウトで表示（カーソル行のページから開く）
+-- 必要な外部コマンド:
+--   winget install oschwartz10612.Poppler   → pdftotext（テキスト抽出）
+--   winget install SumatraPDF.SumatraPDF    → SumatraPDF.exe（実レイアウト表示）
+
+-- バッファ番号 → { path, page_of_line } の対応表。
+-- vim変数(vim.b)に入れるとVimScript型へ変換されて重いので、Lua側で保持する。
+local pdf_state = {}
+
+-- SumatraPDFの実体を探す。インストーラがPATHにもApp Pathsにも登録しないため候補を総当たりする。
+local function find_sumatra()
+  local candidates = {
+    -- 区切りは「/」で書く。WindowsのファイルAPIは「\」と「/」を同じに扱うため、
+    -- Lua文字列のエスケープ地獄（"\\"の二重化）を避けられる。
+    (vim.env.LOCALAPPDATA or "") .. "/SumatraPDF/SumatraPDF.exe",
+    (vim.env.ProgramFiles or "") .. "/SumatraPDF/SumatraPDF.exe",
+    (vim.env["ProgramFiles(x86)"] or "") .. "/SumatraPDF/SumatraPDF.exe",
+  }
+  for _, p in ipairs(candidates) do
+    if vim.fn.filereadable(p) == 1 then return p end
+  end
+  local on_path = vim.fn.exepath("SumatraPDF")  -- 将来PATHに入った場合の保険
+  return on_path ~= "" and on_path or nil
+end
+
+-- 外部ビューアで開く。page を渡すとそのページから表示する。
+local function open_in_sumatra(path, page)
+  local exe = find_sumatra()
+  if not exe then
+    vim.notify("SumatraPDFが見つかりません: winget install SumatraPDF.SumatraPDF", vim.log.levels.WARN)
+    return
+  end
+  local cmd = { exe, "-reuse-instance" }  -- 既存ウィンドウをタブとして再利用する
+  if page and page > 1 then
+    vim.list_extend(cmd, { "-page", tostring(page) })
+  end
+  table.insert(cmd, path)
+  -- detach=true にしないと、nvimを終了したときにビューアも巻き添えで閉じてしまう
+  vim.fn.jobstart(cmd, { detach = true })
+end
+
+-- pdftotextの出力を「ページ見出し付きの行リスト」へ変換する。
+-- pdftotextは既定でページ間に改ページ文字(\f = \012)を入れるので、それを見出し行に置き換え、
+-- 同時に「何行目が何ページ目か」の対応表を作って <leader>p のページ指定に使う。
+local function pdf_to_lines(path)
+  local out = vim.fn.system({ "pdftotext", "-layout", "-q", path, "-" })
+  if vim.v.shell_error ~= 0 then
+    return nil, nil, out
+  end
+
+  local pages = vim.split(out, "\012", { plain = true })
+  -- 最終ページの後ろは空要素になりやすいので落とす
+  if #pages > 1 and pages[#pages]:gsub("%s", "") == "" then
+    table.remove(pages)
+  end
+
+  local lines, page_of_line = {}, {}
+  for i, text in ipairs(pages) do
+    table.insert(lines, ("──── p.%d / %d ────────────────────────────────"):format(i, #pages))
+    page_of_line[#lines] = i
+    -- CRLF由来の \r を落としてから行分割する
+    for _, l in ipairs(vim.split((text:gsub("\r", "")), "\n", { plain = true })) do
+      table.insert(lines, l)
+      page_of_line[#lines] = i
+    end
+  end
+  return lines, page_of_line, nil
+end
+
+-- .pdf を開いたときの読み込み処理を丸ごと差し替える（BufReadCmdは既定の読み込みを無効化する）
+vim.api.nvim_create_autocmd("BufReadCmd", {
+  pattern = { "*.pdf", "*.PDF" },
+  callback = function()
+    local path = vim.fn.expand("<afile>:p")
+    local buf = vim.api.nvim_get_current_buf()
+
+    -- pdftotextが無い場合はテキスト化を諦めて外部ビューアだけ開く
+    if vim.fn.executable("pdftotext") == 0 then
+      vim.notify("pdftotextが無いためSumatraPDFで開きます: winget install oschwartz10612.Poppler", vim.log.levels.WARN)
+      open_in_sumatra(path, nil)
+      vim.schedule(function()
+        if vim.api.nvim_buf_is_valid(buf) then vim.cmd("bwipeout! " .. buf) end
+      end)
+      return
+    end
+
+    local lines, page_of_line, err = pdf_to_lines(path)
+    if not lines then
+      vim.notify("PDFのテキスト抽出に失敗しました: " .. tostring(err), vim.log.levels.ERROR)
+      open_in_sumatra(path, nil)
+      return
+    end
+
+    vim.bo[buf].modifiable = true
+    vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
+    vim.bo[buf].modified = false
+    vim.bo[buf].modifiable = false
+    vim.bo[buf].buftype = "nowrite"   -- 誤って :w で元PDFを壊さないようにする
+    vim.bo[buf].swapfile = false
+    vim.bo[buf].filetype = "pdf"
+
+    pdf_state[buf] = { path = path, page_of_line = page_of_line }
+
+    -- スキャンPDF（文字情報を持たない画像PDF）はここが空になる
+    local has_text = false
+    for _, l in ipairs(lines) do
+      if l:match("^%s*$") == nil and l:match("^────") == nil then has_text = true; break end
+    end
+    if not has_text then
+      vim.notify("テキストを含まないPDF（スキャン画像）のようです。:PdfOpen でSumatraPDFを開いてください。", vim.log.levels.WARN)
+    end
+
+    -- このバッファでだけ有効なキーマップ
+    vim.keymap.set("n", "<leader>p", function()
+      local st = pdf_state[buf]
+      if not st then return end
+      local cur = vim.api.nvim_win_get_cursor(0)[1]
+      open_in_sumatra(st.path, st.page_of_line[cur] or 1)
+    end, { buffer = buf, silent = true, desc = "PDFをSumatraPDFで開く（カーソル行のページ）" })
+  end,
+})
+
+-- バッファを閉じたら対応表も捨てる（開きっぱなしのメモリを残さない）
+vim.api.nvim_create_autocmd("BufWipeout", {
+  pattern = { "*.pdf", "*.PDF" },
+  callback = function(args)
+    pdf_state[args.buf] = nil
+  end,
+})
+
+-- :PdfOpen [ファイル]  … 引数なしなら現在のPDFバッファを外部ビューアで開く
+vim.api.nvim_create_user_command("PdfOpen", function(opts)
+  if opts.args ~= "" then
+    open_in_sumatra(vim.fn.fnamemodify(opts.args, ":p"), nil)
+    return
+  end
+  local st = pdf_state[vim.api.nvim_get_current_buf()]
+  if not st then
+    vim.notify("PDFバッファではありません。:PdfOpen <ファイル> の形で指定してください。", vim.log.levels.WARN)
+    return
+  end
+  local cur = vim.api.nvim_win_get_cursor(0)[1]
+  open_in_sumatra(st.path, st.page_of_line[cur] or 1)
+end, { nargs = "?", complete = "file", desc = "PDFをSumatraPDFで開く" })

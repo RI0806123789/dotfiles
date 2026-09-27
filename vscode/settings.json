@@ -31,7 +31,7 @@
     "chat.mcp.autostart": "newAndOutdated",
     "workbench.secondarySideBar.defaultVisibility": "hidden",
     "geminicodeassist.inlineSuggestions.enableAuto": true,
-    "geminicodeassist.project": "semiotic-module-r75q2",
+    "geminicodeassist.project": "<PROJECT_ID>",
     "launch": {
         "configurations": [
         
