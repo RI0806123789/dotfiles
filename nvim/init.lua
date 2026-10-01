@@ -651,6 +651,8 @@ require("lazy").setup({
   end,
   event = { "WinNew" },
   },
+-- 32. vim-wakatime (コーディング時間の自動計測)
+  { "wakatime/vim-wakatime", lazy = false },
 })
 
 -- ===== PDFビューア連携 =========================================================
