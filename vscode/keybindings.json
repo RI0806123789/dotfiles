@@ -1,0 +1,7 @@
+// 既定値を上書きするには、このファイル内にキー バインドを挿入します
+[
+    {
+        "key": "ctrl+oem_3",
+        "command": "github.copilot.chat.review.continueInChat"
+    }
+]

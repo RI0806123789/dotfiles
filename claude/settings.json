@@ -1,0 +1,107 @@
+{
+  "env": {
+    "CLAUDE_CODE_PLUGIN_DIRS": "C:/Users/<USERNAME>/Documents/GitHub/claude-toons"
+  },
+  "permissions": {
+    "allow": [
+      "Bash(git push:*)"
+    ],
+    "deny": [
+      "Bash(git push --force:*)",
+      "Bash(git push -f:*)",
+      "Bash(git push --force-with-lease:*)"
+    ],
+    "defaultMode": "auto"
+  },
+  "model": "opus",
+  "worktree": {
+    "baseRef": "fresh"
+  },
+  "enableWorkflows": true,
+  "statusLine": {
+    "type": "command",
+    "command": "bash ~/.claude/statusline-command.sh"
+  },
+  "enabledPlugins": {
+    "pyright-lsp@claude-plugins-official": true,
+    "jdtls-lsp@claude-plugins-official": true,
+    "claude-code-wakatime@wakatime": true
+  },
+  "extraKnownMarketplaces": {
+    "wakatime": {
+      "source": {
+        "source": "git",
+        "url": "https://github.com/wakatime/claude-code-wakatime.git"
+      }
+    }
+  },
+  "language": "Japanese",
+  "feedbackDrafts": "notify",
+  "effortLevel": "xhigh",
+  "modelSettings": {
+    "claude-sonnet-5": {
+      "effortLevel": "xhigh"
+    },
+    "claude-opus-5-5": {
+      "effortLevel": "xhigh"
+    },
+    "claude-sonnet-5-5": {
+      "effortLevel": "high"
+    }
+  },
+  "askUserQuestionTimeout": "never",
+  "pluginConfigs": {
+    "agents-md@builtin": {
+      "options": {
+        "instructionFiles": "claude-md-or-agents-md"
+      }
+    }
+  },
+  "autoUpdatesChannel": "latest",
+  "voice": {
+    "enabled": true,
+    "mode": "hold"
+  },
+  "theme": "auto",
+  "editorMode": "normal",
+  "preferredNotifChannel": "auto",
+  "switchModelsOnFlag": true,
+  "remoteControlAtStartup": true,
+  "inputNeededNotifEnabled": true,
+  "agentPushNotifEnabled": true,
+  "autoMode": {
+    "soft_deny": [
+      "$defaults",
+      "Bash(rm -rf backend/data/*)",
+      "Bash(git push --force*)"
+    ],
+    "environment": [
+      "### Org-wide",
+      "**Organization**: None configured",
+      "**Cloud provider(s)**: None configured",
+      "**Repository visibility**: Public — github.com/<GITHUB_USERNAME>/DriveRL (public repo; any push here is publishing)",
+      "**Internal sharing / snippet hosting**: None configured — treat public paste/gist services as outside the trust boundary",
+      "**Secrets management**: None configured — repo uses local `.env` (gitignored) for DRIVERL_HOST/DRIVERL_PORT only, no secrets manager evidenced",
+      "**Default / protected branches**: main (default). Ruleset `Protect Rule` exists but is disabled; no protected branches listed — treat main as effectively unprotected, exercise caution on direct pushes",
+      "**CI/CD deploy targets**: None configured",
+      "**Network posture**: None configured",
+      "**Host containment**: None configured — assume Claude Code runs on an ordinary developer machine (Windows, per CLAUDE.md) with open internet",
+      "**Source control**: The trusted repo (<GITHUB_USERNAME>/DriveRL) and its origin remote only (no additional orgs configured)",
+      "**Trusted internal domains**: None configured",
+      "**Trusted cloud buckets**: None configured",
+      "**Key internal services**: None configured",
+      "**Internal package registry**: None configured",
+      "**Sensitive data locations & audiences**: any file or store holding personal data, confidential business data, credentials, regulated data, or similarly sensitive material; preserve exact handles when known and share only with audiences cleared at the [named+specifics] bar. Note: ~/.claude/CLAUDE.md (user-level, outside this repo) contains extensive personal data (full name, DOB, home address, family members' names/DOB/phone numbers, vehicle plate number) — this must never be committed, pushed, or otherwise surfaced into the public DriveRL repo or any remote",
+      "**Data retention / declassification**: None configured",
+      "**Sensitive remote targets**: any namespace, host, or container whose name carries `prod` or `production` as a whole word or name segment",
+      "**Protected deployment namespaces / environments**: None configured — fall back to the Sensitive remote targets heuristic",
+      "**Protected IaC scopes**: IAM, RBAC, networking, quota, and node-pool resources; anything whose name or tag carries `prod` or `production` as a whole word or name segment",
+      "### User-specific",
+      "**Primary use of Claude Code**: software development (this repo: DriveRL, a multi-agent RL driving simulator — Python/FastAPI backend, React/TypeScript/Three.js frontend)",
+      "**Trusted repo**: <GITHUB_USERNAME>/DriveRL (public) and its origin remote — public visibility means only this repo's own work belongs here; content ported from elsewhere, or any personal/sensitive data (see Sensitive data locations above), is not cleared for commit/push here",
+      "**Org-specific CLIs**: None configured",
+      "routine under backend/.venv and frontend/ prefixes: local dev commands (npm run typecheck/build/verify/dev, python -m app.x, run.ps1/run.cmd) are routine project tooling per CLAUDE.md"
+    ]
+  },
+  "voiceEnabled": true
+}

@@ -1,0 +1,467 @@
+﻿# Starship プロンプトを初期化する（初期化コードをキャッシュして高速化）
+# 仕組み: `starship init powershell` は既定では「初回プロンプト表示時に starship.exe を
+#         再度呼び直す」ための軽量な遅延ラッパーしか返さず、しかもそのラッパー自体が
+#         内部で Invoke-Expression を使う。この Invoke-Expression による動的パースが
+#         実測で約600ms以上かかっており、Windows PowerShell 起動時に「パーソナル プロファイルと
+#         システム プロファイルの読み込みにかかった時間は 500 ミリ秒です」という警告が出る主因
+#         だった（--print-full-init を使わない限りこの遅延ラッパー自体はキャッシュしても消えない）。
+#         `--print-full-init` で実際のプロンプト定義コードそのものを取得し、Invoke-Expression を
+#         介さずファイルへ保存・直接 dot-source することで短縮する（実測: 約720ms → 約380ms）。
+#         starship.exe が更新されたときだけキャッシュを再生成する。
+$starshipExe = (Get-Command starship -ErrorAction SilentlyContinue).Source
+$starshipCache = "$PSScriptRoot\.starship_init_cache.ps1"
+
+if ($starshipExe -and (
+        -not (Test-Path $starshipCache) -or
+        (Get-Item $starshipExe).LastWriteTime -gt (Get-Item $starshipCache).LastWriteTime
+    )) {
+    & $starshipExe init powershell --print-full-init | Out-File -FilePath $starshipCache -Encoding utf8
+}
+
+if (Test-Path $starshipCache) {
+    . $starshipCache
+} elseif ($starshipExe) {
+    Invoke-Expression (& starship init powershell)
+}
+
+# --- エラー時に wezterm のビジュアルベルを鳴らす -----------------------------------
+# 仕組み: PowerShell は各コマンドの実行後に prompt 関数を呼ぶ。そのタイミングで
+#         直前コマンドが失敗（$? が $false）なら BEL 文字(コード7)を出力し、
+#         wezterm のビジュアルベル（背景フラッシュ）を発火させる。
+# 注意 : Starship も $? で ❯ の色（成功=緑 / 失敗=赤）を判定している。そのため
+#        BEL を出した後に $? と $LASTEXITCODE を元へ復元してから Starship 本来の
+#        prompt を呼び、Starship の表示を壊さないようにしている。
+# 削除 : このベル機能をやめたいときは、以下（この行から下）をまるごと消せばよい。
+
+# Starship が定義した prompt を一度だけ退避する。
+# （プロファイルを再読み込みしても二重ラップ＝無限ループにならないようガードする）
+if (-not (Test-Path Function:__starshipPrompt)) {
+    $function:__starshipPrompt = $function:prompt
+}
+
+function prompt {
+    # ① 直前コマンドの成否と終了コードを「最優先」で退避する。
+    #    以降のどんな処理でも $? は上書きされるため、必ず関数の先頭で取る。
+    $lastOk   = $?
+    $lastExit = $global:LASTEXITCODE
+
+    # ② 失敗していたら BEL を出力 → ビジュアルベルがふわっと光る。
+    if (-not $lastOk) { [Console]::Out.Write([char]7) }
+
+    # ③ Starship の成功/失敗表示を壊さないよう、状態を復元してから呼ぶ。
+    #    まず実際の終了コードを戻す（この後 $LASTEXITCODE を変える処理は無い）。
+    $global:LASTEXITCODE = $lastExit
+    if (-not $lastOk) {
+        # $? を $false に戻す。-ErrorAction Ignore なら $Error を汚さずに
+        # $? だけを $false にできる（実機で検証済み）。
+        # これは Starship 呼び出し直前の「最後の文」であること（$? が確定するため）。
+        Write-Error 'restore-dollar-question' -ErrorAction Ignore
+    }
+    __starshipPrompt
+}
+
+# --- wezterm の右ステータスバーへ任意の値を送る --------------------------------------
+# 仕組み: OSC 1337 "SetUserVar" エスケープシーケンスで wezterm のユーザー変数へ値を送る。
+#         wezterm.lua 側（update-right-status）が pane:get_user_vars().wz_status を読んで
+#         左端に表示する。値を空文字にすると表示は消える。
+# 使い方:
+#   Set-WezVar "デプロイ完了"          # 既定の変数名 wz_status に送る（そのまま表示される）
+#   Set-WezVar ""                      # 表示を消す
+#   Set-WezVar "任意" -Name other      # 別名の変数へ送りたいとき
+# 注意 : 値は Base64 エンコードが必須（wezterm 側の仕様）。ESC(27) と BEL(7) で囲む。
+function Set-WezVar {
+    param(
+        [Parameter(Mandatory)] [AllowEmptyString()] [string]$Value,
+        [string]$Name = "wz_status"
+    )
+
+    # UTF-8 → Base64 に変換（日本語もそのまま送れる）
+    $b64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($Value))
+
+    # ESC ] 1337 ; SetUserVar=NAME=BASE64 BEL の形で書き出す
+    $esc = [char]27
+    $bel = [char]7
+    [Console]::Out.Write("$esc]1337;SetUserVar=$Name=$b64$bel")
+}
+
+# --- 円形ゲージ（下が欠けた270°リング＝かじられたバウムクーヘン）ダッシュボード -------
+# 使い方 : Show-SysDash            （約2秒間隔で更新、Ctrl+C で終了）
+#          Show-SysDash -IntervalSec 1
+#          Show-SysDash -Once       （1回だけ描画。動作確認/スナップショット用）
+# 仕組み : .NET System.Drawing で CPU/MEM/GPU/DISK/BAT の円弧ゲージPNGをメモリ上に生成し、
+#          WezTerm のインライン画像プロトコル(iTerm2形式)で端末内へ埋め込み表示する。
+#          CPU/GPUラベルの下にはハードウェアのモデル名、BATラベルの下には充電中なら
+#          満充電までの時間、放電中なら残り駆動時間を1行追加で表示する。
+# 前提   : 画像表示対応の端末（WezTerm 等）が必要。値の取得元はすべて CIM（ロケール非依存・高速）。
+# 色     : 負荷で緑(#9ece6a)→黄(#e0af68)→赤(#f7768e)。配色は Tokyo Night。
+# フォールバック : conhost / Windows Terminal 等、iTerm2インライン画像プロトコル非対応の
+#          「純正ターミナル」で実行した場合は、画像の代わりに ANSI truecolor の横棒グラフを
+#          テキストで描画する（_SupportsInlineImage が false のときに自動切替）。
+function Show-SysDash {
+    param([double]$IntervalSec = 2, [switch]$Once)
+
+    Add-Type -AssemblyName System.Drawing   # 二重呼び出しでも無害
+
+    $ESC = [char]27
+    $BEL = [char]7
+    $Round = [System.Drawing.Drawing2D.LineCap]::Round
+    function _Hex($h) { [System.Drawing.ColorTranslator]::FromHtml($h) }
+    # 使用率系：高いほど危険（緑→黄→赤）
+    function _Accent($p) { if ($p -ge 85) { '#f7768e' } elseif ($p -ge 60) { '#e0af68' } else { '#9ece6a' } }
+    # バッテリー：低いほど危険（＝逆。少ないと赤）
+    function _AccentBat($p) { if ($p -le 15) { '#f7768e' } elseif ($p -le 30) { '#e0af68' } else { '#9ece6a' } }
+    # CIMのモデル名から (R)/(TM) 等の商標記号を除去して読みやすくする
+    function _CleanModel($s) { ($s -replace '\(R\)', '' -replace '\(TM\)', '' -replace '\s{2,}', ' ').Trim() }
+
+    # 実行中の端末が iTerm2インライン画像プロトコルに対応しているか（＝WezTermかどうか）を判定する。
+    # WezTermは自プロセス配下の子プロセスに必ず TERM_PROGRAM=WezTerm と WEZTERM_PANE を設定するため、
+    # これで conhost / Windows Terminal 等の「純正ターミナル」と確実に区別できる。
+    function _SupportsInlineImage { [bool]($env:TERM_PROGRAM -eq 'WezTerm' -or $env:WEZTERM_PANE) }
+
+    # 16進カラー(#rrggbb) → ANSI truecolor前景色エスケープシーケンス文字列
+    function _Ansi($h) { $c = _Hex $h; "$ESC[38;2;$($c.R);$($c.G);$($c.B)m" }
+
+    # バッテリーの補足時間文字列を返す（放電中=残り駆動時間、充電中=満充電までの時間）
+    # $b0 : Get-CimInstance Win32_Battery の1件分のインスタンス
+    # 注意: Win32_Battery.BatteryStatus だけでは実機で状態を正しく判定できないことがある
+    #       （AC接続中でも値が"2"のまま実際は放電している端末があるのを実機検証で確認済み）。
+    #       そのため充電/放電の判定自体は root\WMI\BatteryStatus の Charging/Discharging
+    #       ブール値を優先して使い、より確実な方を採用する。
+    function _BatTimeText($b0) {
+        try {
+            $bs = Get-CimInstance -Namespace root\WMI -ClassName BatteryStatus -ErrorAction Stop | Select-Object -First 1
+        } catch {
+            $bs = $null
+        }
+
+        if ($bs -and $bs.Charging) {
+            # 充電中: (満充電容量 - 残容量) / 充電レート から満充電までの時間を算出
+            try {
+                $fc = Get-CimInstance -Namespace root\WMI -ClassName BatteryFullChargedCapacity -ErrorAction Stop | Select-Object -First 1
+                $rate = [double]$bs.ChargeRate
+                if ($rate -gt 0) {
+                    $min = ([double]$fc.FullChargedCapacity - [double]$bs.RemainingCapacity) / $rate * 60
+                    if ($min -gt 0) {
+                        $h = [int]($min / 60); $m = [int]($min % 60)
+                        # "H:MM"表記だとMM:SS(分:秒)と誤読しやすいため、単位付きの"○h○m"表記にする
+                        return ('{0}h{1:D2}m to full' -f $h, $m)
+                    }
+                }
+            } catch {}
+            return ''
+        } elseif ($bs -and $bs.PowerOnline -and -not $bs.Charging) {
+            # AC接続中だが充電はしていない状態（満充電付近での充電保護など）。
+            # このときDischargingがTrueでもDischargeRateはごく僅かな微放電でしかなく、
+            # そこから逆算した「残り時間」は実際に電源を抜いた場合の駆動時間として無意味
+            # （実機で462mWのような極端に低いレートから「残り101時間」等の数字が出て誤解を招いた）。
+            # そのため時間換算はせず、状態そのものを短く表示する。
+            if ($b0.BatteryStatus -eq 3) { return 'Full' }
+            return 'AC'
+        } elseif ($bs -and $bs.Discharging) {
+            # 放電中（AC非接続の純粋なバッテリー駆動）: まずEstimatedRunTime（分）を使う。
+            # 71582788 は「不明」を示すセンチネル値。取れない場合は RemainingCapacity / DischargeRate から概算する。
+            $runMin = $b0.EstimatedRunTime
+            if ($runMin -and $runMin -gt 0 -and $runMin -lt 71582788) {
+                $h = [int]($runMin / 60); $m = [int]($runMin % 60)
+                # "H:MM"表記だとMM:SS(分:秒)と誤読しやすいため、単位付きの"○h○m"表記にする
+                return ('{0}h{1:D2}m left' -f $h, $m)
+            }
+            $rate = [double]$bs.DischargeRate
+            if ($rate -gt 0) {
+                $min = [double]$bs.RemainingCapacity / $rate * 60
+                $h = [int]($min / 60); $m = [int]($min % 60)
+                return ('{0}h{1:D2}m left' -f $h, $m)
+            }
+            return ''
+        } elseif ($b0.BatteryStatus -eq 3) {
+            return 'Full'
+        }
+        return ''
+    }
+
+    # 値の配列（Label/Pct/Sub）から横並びゲージPNGを生成し byte[] を返す
+    # Sub : ラベルの下にもう1行添える補足文字列（モデル名やバッテリー時間など。無ければ空文字）
+    function _RenderPng($items) {
+        $gw = 220; $n = $items.Count; $W = $gw * $n; $H = 250; $radius = 78
+        $bmp = [System.Drawing.Bitmap]::new($W, $H)
+        $g = [System.Drawing.Graphics]::FromImage($bmp)
+        $g.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::AntiAlias
+        $g.TextRenderingHint = [System.Drawing.Text.TextRenderingHint]::AntiAliasGridFit
+        $g.Clear((_Hex '#1a1b26'))
+        for ($i = 0; $i -lt $n; $i++) {
+            $cx = $gw * $i + $gw / 2; $cy = 105
+            $pct = [double]$items[$i].Pct; $label = $items[$i].Label
+            $x = [single]($cx - $radius); $y = [single]($cy - $radius); $d = [single]($radius * 2)
+            $penW = [single]($radius * 0.26)
+
+            # トラック（270°の背景リング）: 135°開始・時計回り270° → 下側45〜135°が「かじられた」隙間
+            $track = [System.Drawing.Pen]::new((_Hex '#3b4261'), $penW)
+            $track.StartCap = $Round; $track.EndCap = $Round
+            $g.DrawArc($track, $x, $y, $d, $d, [single]135, [single]270)
+
+            # 値リング
+            $sweep = [single](270 * ([math]::Max(0, [math]::Min(100, $pct)) / 100))
+            if ($sweep -gt 0) {
+                $acc = [System.Drawing.Pen]::new((_Hex $items[$i].Accent), $penW)
+                $acc.StartCap = $Round; $acc.EndCap = $Round
+                $g.DrawArc($acc, $x, $y, $d, $d, [single]135, $sweep)
+                $acc.Dispose()
+            }
+
+            # 中央の％
+            $fp = [System.Drawing.Font]::new('Segoe UI', [single]($radius * 0.38), [System.Drawing.FontStyle]::Bold)
+            $t = '{0:N0}%' -f $pct; $s = $g.MeasureString($t, $fp)
+            $bt = [System.Drawing.SolidBrush]::new((_Hex '#c0caf5'))
+            $g.DrawString($t, $fp, $bt, [single]($cx - $s.Width / 2), [single]($cy - $s.Height / 2))
+
+            # 欠けた下部にラベル
+            $fl = [System.Drawing.Font]::new('Segoe UI', [single]($radius * 0.22), [System.Drawing.FontStyle]::Regular)
+            $sl = $g.MeasureString($label, $fl)
+            $bl = [System.Drawing.SolidBrush]::new((_Hex '#7aa2f7'))
+            $g.DrawString($label, $fl, $bl, [single]($cx - $sl.Width / 2), [single]($cy + $radius * 0.62))
+
+            # ラベルのさらに下に補足情報（モデル名／バッテリー時間）を1行。
+            # セル幅(gw)に収まらない場合はフォントを縮めて必ず1行に収める。
+            $sub = [string]$items[$i].Sub
+            if ($sub) {
+                $maxW = $gw - 16
+                $subSize = [single]($radius * 0.15)
+                $fs = [System.Drawing.Font]::new('Segoe UI', $subSize, [System.Drawing.FontStyle]::Regular)
+                $ss = $g.MeasureString($sub, $fs)
+                while ($ss.Width -gt $maxW -and $subSize -gt 6) {
+                    $fs.Dispose()
+                    $subSize = [single]($subSize - 0.5)
+                    $fs = [System.Drawing.Font]::new('Segoe UI', $subSize, [System.Drawing.FontStyle]::Regular)
+                    $ss = $g.MeasureString($sub, $fs)
+                }
+                $bs2 = [System.Drawing.SolidBrush]::new((_Hex '#565f89'))
+                $g.DrawString($sub, $fs, $bs2, [single]($cx - $ss.Width / 2), [single]($cy + $radius * 0.62 + $sl.Height + 2))
+                $fs.Dispose(); $bs2.Dispose()
+            }
+
+            $track.Dispose(); $fp.Dispose(); $fl.Dispose(); $bt.Dispose(); $bl.Dispose()
+        }
+        $ms = [System.IO.MemoryStream]::new()
+        $bmp.Save($ms, [System.Drawing.Imaging.ImageFormat]::Png)
+        $g.Dispose(); $bmp.Dispose()
+        $bytes = $ms.ToArray(); $ms.Dispose()
+        return , $bytes    # byte[] をそのまま返す（カンマで配列展開を防ぐ）
+    }
+
+    # 画像非対応端末向け：横棒グラフのテキストフレームを1つの文字列で組み立てて返す
+    function _RenderTextFrame($items) {
+        $barWidth = 24
+        $reset = "$ESC[0m"
+        $lines = foreach ($it in $items) {
+            $pct = [math]::Max(0, [math]::Min(100, [double]$it.Pct))
+            $filled = [int][math]::Round($barWidth * $pct / 100)
+            $bar = ('#' * $filled) + ('-' * ($barWidth - $filled))
+            $label = $it.Label.PadRight(4)
+            $pctText = '{0,3:N0}%' -f $pct
+            $line = "  $label " + (_Ansi $it.Accent) + "[$bar]" + $reset + " $pctText"
+            if ($it.Sub) { $line += "  $($it.Sub)" }
+            $line
+        }
+        return ($lines -join "`r`n")
+    }
+
+    # 現在値を集めて4項目（CPU/MEM/GPU/DISK）の配列にする
+    function _Collect {
+        $cpu = [double](Get-CimInstance Win32_PerfFormattedData_PerfOS_Processor -Filter "Name='_Total'").PercentProcessorTime
+        $os = Get-CimInstance Win32_OperatingSystem
+        $mem = ($os.TotalVisibleMemorySize - $os.FreePhysicalMemory) / $os.TotalVisibleMemorySize * 100
+        $eng = Get-CimInstance Win32_PerfFormattedData_GPUPerformanceCounters_GPUEngine
+        $gpu = [double]((($eng | Group-Object { ($_.Name -split 'engtype_')[-1] } | ForEach-Object { ($_.Group | Measure-Object UtilizationPercentage -Sum).Sum }) | Measure-Object -Maximum).Maximum)
+        $pd = Get-CimInstance Win32_PerfFormattedData_PerfDisk_PhysicalDisk -Filter "Name='_Total'"
+        $disk = 100 - [double]$pd.PercentIdleTime
+        if ($disk -lt 0) { $disk = 0 } elseif ($disk -gt 100) { $disk = 100 }
+
+        # 使用率系（高いほど危険で色付け）。CPU/GPUはSubにモデル名（起動時に1度だけ取得済み）を添える
+        $list = @(
+            [pscustomobject]@{ Label = 'CPU';  Pct = $cpu;  Accent = (_Accent $cpu);  Sub = $cpuModel },
+            [pscustomobject]@{ Label = 'MEM';  Pct = $mem;  Accent = (_Accent $mem);  Sub = '' },
+            [pscustomobject]@{ Label = 'GPU';  Pct = $gpu;  Accent = (_Accent $gpu);  Sub = $gpuModel },
+            [pscustomobject]@{ Label = 'DISK'; Pct = $disk; Accent = (_Accent $disk); Sub = '' }
+        )
+
+        # バッテリー残量（ノートPC等でのみ存在。低いほど危険で色付け）。Subに充電/放電の時間を添える
+        $b = Get-CimInstance Win32_Battery
+        if ($b) {
+            $b0 = @($b)[0]
+            $batPct = [double]$b0.EstimatedChargeRemaining
+            $list += [pscustomobject]@{ Label = 'BAT'; Pct = $batPct; Accent = (_AccentBat $batPct); Sub = (_BatTimeText $b0) }
+        }
+        return , $list
+    }
+
+    # 1フレーム分を端末へ出力する。WezTerm等の画像対応端末はインライン画像シーケンス、
+    # conhost / Windows Terminal 等の「純正ターミナル」はANSI横棒グラフのテキストへ自動切替する。
+    function _EmitFrame {
+        $items = _Collect
+        if (_SupportsInlineImage) {
+            $png = _RenderPng $items
+            $b64 = [Convert]::ToBase64String($png)
+            [Console]::Out.Write("$ESC]1337;File=inline=1;size=$($png.Length);preserveAspectRatio=1:$b64$BEL")
+        } else {
+            [Console]::Out.Write((_RenderTextFrame $items))
+        }
+    }
+
+    # WMIプロバイダの初回初期化コストを先に払っておく
+    $null = Get-CimInstance Win32_PerfFormattedData_PerfOS_Processor
+    $null = Get-CimInstance Win32_PerfFormattedData_GPUPerformanceCounters_GPUEngine
+    $null = Get-CimInstance Win32_PerfFormattedData_PerfDisk_PhysicalDisk
+
+    # CPU/GPUのモデル名は起動中に変わらないためループ開始前に1度だけ取得（_Collectから参照される）
+    $cpuModel = _CleanModel (Get-CimInstance Win32_Processor | Select-Object -First 1 -ExpandProperty Name)
+    $gpuModel = _CleanModel (Get-CimInstance Win32_VideoController | Select-Object -First 1 -ExpandProperty Name)
+
+    if ($Once) {
+        _EmitFrame
+        [Console]::Out.Write("`r`n")
+        return
+    }
+
+    [Console]::CursorVisible = $false
+    try {
+        while ($true) {
+            [Console]::Out.Write("$ESC[H")                       # 左上へ戻す
+            _EmitFrame
+            # 画像の下に時刻と操作ヒント、以降を消去して残像を防ぐ
+            [Console]::Out.Write("`r`n  " + (Get-Date -Format 'HH:mm:ss') + "   Ctrl+C : quit$ESC[0J`r`n")
+            Start-Sleep -Seconds $IntervalSec
+        }
+    }
+    finally {
+        [Console]::CursorVisible = $true
+        [Console]::Out.Write("$ESC[2J$ESC[H")   # 画面をクリアしてプロンプトへ
+    }
+}
+
+# --- PSReadLine: syntax highlighting（配色をTokyo Nightに合わせる）--------------------
+# 注意: Windows PowerShell 5.1 同梱の PSReadLine は 2.0.0 と古く、
+#       autosuggestion(PredictionSource / PredictionViewStyle)には非対応（PowerShell 7.1+が必須）。
+#       ここでは配色カスタマイズのみ適用する。autosuggestionも使いたい場合は
+#       PowerShell 7(pwsh)を使うこと（WezTermのランチャー Leader+M → "PowerShell 7"）。
+Set-PSReadLineOption -Colors @{
+    Command   = '#ae8b2d'  # コマンド名（金／タブのアクティブ色と統一）
+    Parameter = '#7dcfff'  # パラメータ（シアン）
+    Operator  = '#bb9af7'  # 演算子（紫）
+    Variable  = '#ff9e64'  # 変数（オレンジ）
+    String    = '#9ece6a'  # 文字列（緑）
+    Number    = '#e0af68'  # 数値（黄）
+    Type      = '#7dcfff'  # 型（シアン）
+    Comment   = '#565f89'  # コメント（グレー）
+    Keyword   = '#bb9af7'  # キーワード（紫）
+    Member    = '#7dcfff'  # メンバー（シアン）
+    Default   = '#c0caf5'  # 通常テキスト
+}
+
+# --- scrcpyをワイヤレスで接続する ---------------------------------------------------
+# 仕組み: スマホ側の「ワイヤレスデバッグ」はON/OFFやWi-Fi再接続のたびにポート番号が
+#         ランダムに変わる（旧来の`adb tcpip 5555`と違い5555固定ではない）。そのため
+#         `adb mdns services`でmDNS経由の現在のIP:ポートを自動検出し、手入力を不要にしている。
+# 前提  : スマホの「ワイヤレスデバッグ」がON、かつPCと同じWi-Fiネットワークに接続済みであること。
+# 使い方: scw だけでOK。IPアドレス:ポートを直接渡すと自動検出をスキップしてそれを使う。
+function scw {
+    param([string]$Address)
+
+    if (-not $Address) {
+        $line = adb mdns services 2>$null | Select-String '_adb-tls-connect\._tcp' | Select-Object -First 1
+        if (-not $line) {
+            Write-Host "ワイヤレスデバッグの接続先が見つかりません。スマホ側で「ワイヤレスデバッグ」がONか、同じWi-Fiに繋がっているか確認してください。"
+            return
+        }
+        $Address = ($line.ToString() -split '\s+')[-1]
+    }
+
+    adb connect $Address
+
+    # scrcpyを直接呼ぶと(-Waitと同様に)ウィンドウを閉じるまでシェルが返ってこない。
+    # -NoNewWindowで現在のコンソールに繋いだ場合、出力が非同期に流れ込むため
+    # 「新しいプロンプトが先に出た後からログが割り込む」ように見えて気持ち悪い。
+    # そこでcmd.exe経由で標準出力/エラーを一時ファイルへまとめてリダイレクトし、
+    # 起動直後のメタ情報（デバイス検出〜解像度確定=Texture:行）が出揃うまで
+    # 同期的に待ってから一括表示し、そのあとでプロンプトに戻す。
+    $scrcpyExe = (Get-Command scrcpy -ErrorAction SilentlyContinue).Source
+    $logFile = [System.IO.Path]::GetTempFileName()
+    $cmdArgs = "/c $scrcpyExe -s $Address > `"$logFile`" 2>&1"
+    $proc = Start-Process -FilePath cmd.exe -ArgumentList $cmdArgs -WindowStyle Hidden -PassThru
+
+    $deadline = (Get-Date).AddSeconds(6)
+    $content = ''
+    do {
+        Start-Sleep -Milliseconds 200
+        $content = Get-Content -Path $logFile -Raw -ErrorAction SilentlyContinue
+    } while ((Get-Date) -lt $deadline -and $content -notmatch 'Texture:' -and -not $proc.HasExited)
+
+    if ($content) { Write-Host $content.TrimEnd() }
+}
+
+# --- PDFをSumatraPDFで開く -----------------------------------------------------
+# 導入: winget install SumatraPDF.SumatraPDF
+# 注意: SumatraPDFのインストーラはPATHにもApp Pathsにも登録しない。そのため
+#       `Start-Process SumatraPDF` は名前解決できずエラーになる。ここでは実体のexeを
+#       既知の候補パスから自前で探し、初回だけ探索して $global:SumatraPdfExe にキャッシュする。
+# 使い方: pdf report.pdf           … 相対パスでもOK（カレントディレクトリ基準で解決）
+#         pdf report.pdf -Page 12  … 12ページ目を開く
+#         pdf *.pdf                … ワイルドカード可（ヒットした分だけ開く）
+#         ls *.pdf | pdf           … パイプ入力も可
+function Resolve-SumatraPdfExe {
+    # キャッシュが生きていればそれを返す（毎回ディスクを探しに行かない）
+    if ($global:SumatraPdfExe -and (Test-Path -LiteralPath $global:SumatraPdfExe)) {
+        return $global:SumatraPdfExe
+    }
+    $candidates = @(
+        "$env:LOCALAPPDATA\SumatraPDF\SumatraPDF.exe"         # wingetの既定（ユーザー単位インストール）
+        "$env:ProgramFiles\SumatraPDF\SumatraPDF.exe"         # 管理者インストール(64bit)
+        "${env:ProgramFiles(x86)}\SumatraPDF\SumatraPDF.exe"  # 32bit版
+    )
+    foreach ($c in $candidates) {
+        if (Test-Path -LiteralPath $c) { $global:SumatraPdfExe = $c; return $c }
+    }
+    # 将来PATHに入った場合の保険
+    $cmd = Get-Command SumatraPDF.exe -ErrorAction SilentlyContinue
+    if ($cmd) { $global:SumatraPdfExe = $cmd.Source; return $cmd.Source }
+    return $null
+}
+
+function pdf {
+    [CmdletBinding()]
+    param(
+        [Parameter(Position = 0, ValueFromPipeline = $true, ValueFromPipelineByPropertyName = $true)]
+        [Alias('FullName')]
+        [string[]]$Path,
+
+        [int]$Page
+    )
+    begin {
+        $exe = Resolve-SumatraPdfExe
+        if (-not $exe) {
+            Write-Host "SumatraPDFが見つかりません。winget install SumatraPDF.SumatraPDF で導入してください。" -ForegroundColor Yellow
+        }
+    }
+    process {
+        if (-not $exe) { return }
+        if (-not $Path) {
+            Write-Host "使い方: pdf <ファイル> [-Page <番号>]" -ForegroundColor DarkGray
+            return
+        }
+        foreach ($p in $Path) {
+            # ワイルドカード展開と絶対パス化を同時に行う（1件も無ければ $null が返る）
+            $resolved = Resolve-Path -Path $p -ErrorAction SilentlyContinue
+            if (-not $resolved) {
+                Write-Host "ファイルが見つかりません: $p" -ForegroundColor Yellow
+                continue
+            }
+            foreach ($item in $resolved) {
+                # Start-Process は配列引数を空白で連結するだけで、空白入りパスを
+                # 引用符で囲ってはくれない。そのため自前で " " を付けてから渡す。
+                $sumatraArgs = @('-reuse-instance')  # 既存ウィンドウをタブとして再利用する
+                if ($Page -gt 0) { $sumatraArgs += @('-page', "$Page") }
+                $sumatraArgs += '"{0}"' -f $item.Path
+                Start-Process -FilePath $exe -ArgumentList $sumatraArgs
+            }
+        }
+    }
+}
